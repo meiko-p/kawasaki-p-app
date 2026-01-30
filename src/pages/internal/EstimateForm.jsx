@@ -183,7 +183,7 @@ function calcPrintCost({ machine, colors, is_double_sided, print_unit_cost, quan
 
     let leftoverRaw = (qty * pagesN) / imposition - 1000;
     if (leftoverRaw < 0) leftoverRaw = 0;
-    const leftover = leftoverRaw * 0.8 * pageDiv;
+    const leftover = leftoverRaw * 1.5 * pageDiv;
 
     return base + leftover;
   }
@@ -194,7 +194,7 @@ function calcPrintCost({ machine, colors, is_double_sided, print_unit_cost, quan
 
     let leftoverRaw = ((qty * pagesN) / imposition) * 4 - 1000;
     if (leftoverRaw < 0) leftoverRaw = 0;
-    const leftover = leftoverRaw * 4 * 0.8 * pageDiv;
+    const leftover = leftoverRaw * 4 * 1.5 * pageDiv;
 
     return base + leftover;
   }

@@ -36,16 +36,7 @@ export default function Dashboard() {
 
         <Grid item xs={12} md={6} lg={4}>
           <Card
-            title="計画書（発注）"
-            desc="月次の必要数量を川崎重工様と当社で共有し、手配/納品状況を確認します。"
-            to="/plans"
-          />
-        </Grid>
-
-
-        <Grid item xs={12} md={6} lg={4}>
-          <Card
-            title="見積"
+            title="見積＆納品予定＆入札時【スタート】"
             desc="見積計算からPDF出力まで。（社内専用）"
             to="/estimates"
             disabled={!isStaff}
@@ -69,11 +60,12 @@ export default function Dashboard() {
           />
         </Grid>
 
-        <Grid item xs={12} md={6} lg={4}>
+                <Grid item xs={12} md={6} lg={4}>
           <Card
-            title="商品マスタ"
-            desc="商品番号、種別（OM/小型エンジン）、単価などを管理します。"
-            to="/products"
+            title="ラベル【田中さん共有】"
+            desc="商品番号と納品数を中央2行で印字し、PDF出力します（社内専用）。"
+            to="/labels"
+            disabled={!isStaff}
           />
         </Grid>
 
@@ -86,14 +78,23 @@ export default function Dashboard() {
           />
         </Grid>
 
-        <Grid item xs={12} md={6} lg={4}>
+
+                <Grid item xs={12} md={6} lg={4}>
           <Card
-            title="ラベル（A4 12面）"
-            desc="商品番号と納品数を中央2行で印字し、PDF出力します（社内専用）。"
-            to="/labels"
-            disabled={!isStaff}
+            title="見積＆納品数【確定提出分】"
+            desc="最後に川重へ提出"
+            to="/products"
           />
         </Grid>
+
+                <Grid item xs={12} md={6} lg={4}>
+          <Card
+            title="単価登録【ロット単価、商品別単価】"
+            desc="単価を各種一覧で登録＆PDF出力。"
+            to="/plans"
+          />
+        </Grid>
+
 
                 <Grid item xs={12} md={6} lg={4}>
           <Card
