@@ -34,3 +34,4 @@ export const supabase =
 if (!globalThis[GLOBAL_KEY]) {
   globalThis[GLOBAL_KEY] = supabase;
 }
+
