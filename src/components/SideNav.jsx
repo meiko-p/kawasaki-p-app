@@ -73,10 +73,10 @@ export default function SideNav({ open, onClose }) {
                 社内専用
               </Typography>
 
-              <NavItem to="/estimates" icon={<ReceiptLongIcon />} label="見積" onClick={onClose} />
+              <NavItem to="/estimates" icon={<ReceiptLongIcon />} label="見積＆納品予定【スタート】" onClick={onClose} />
               <NavItem to="/dempyo" icon={<PrintIcon />} label="社内伝票（PDF）" onClick={onClose} />
+              <NavItem to="/labels" icon={<QrCode2Icon />} label="ラベル【田中さん共有】" onClick={onClose} />
               <NavItem to="/inventory" icon={<Inventory2Icon />} label="在庫管理" onClick={onClose} />
-              <NavItem to="/labels" icon={<QrCode2Icon />} label="ラベル（A4 12面）" onClick={onClose} />
             </>
           )}
         </List>
