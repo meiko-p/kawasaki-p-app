@@ -62,8 +62,8 @@ export default function SideNav({ open, onClose }) {
             共有（川崎重工 + 社内）
           </Typography>
 
-          <NavItem to="/products" icon={<QrCode2Icon />} label="商品" onClick={onClose} />
-          <NavItem to="/plans" icon={<DescriptionIcon />} label="計画書（発注）" onClick={onClose} />
+          <NavItem to="/products" icon={<QrCode2Icon />} label="見積・納品数【確定】" onClick={onClose} />
+          <NavItem to="/plans" icon={<DescriptionIcon />} label="商品単価" onClick={onClose} />
           <NavItem to="/packages" icon={<LocalShippingIcon />} label="梱包登録" onClick={onClose} />
 
           {isStaff && (

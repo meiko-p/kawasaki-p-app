@@ -104,6 +104,13 @@ export default function Dashboard() {
           />
         </Grid>
 
+<Grid item xs={12} md={6} lg={4}>                  <Card
+            title="緊急時 小ロット対応"
+            desc="緊急で数量が少ない商品の単価算出と見積り提出分"
+            to="/"
+          /></Grid>
+
+
       </Grid>
     </Box>
   );
