@@ -21,7 +21,6 @@ import DescriptionRoundedIcon from '@mui/icons-material/DescriptionRounded';
 import Inventory2RoundedIcon from '@mui/icons-material/Inventory2Rounded';
 import LabelRoundedIcon from '@mui/icons-material/LabelRounded';
 import WarehouseRoundedIcon from '@mui/icons-material/WarehouseRounded';
-import FactCheckRoundedIcon from '@mui/icons-material/FactCheckRounded';
 import PriceChangeRoundedIcon from '@mui/icons-material/PriceChangeRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import CalendarMonthRoundedIcon from '@mui/icons-material/CalendarMonthRounded';
@@ -67,19 +66,13 @@ const MENU_ITEMS = [
     staffOnly: true,
   },
   {
-    label: '在庫管理',
+    label: '在庫管理（納品完了）',
     path: '/inventory',
     icon: <WarehouseRoundedIcon />,
     staffOnly: true,
   },
   {
-    label: '見積＆納品数【確定提出分】',
-    path: '/plans',
-    icon: <FactCheckRoundedIcon />,
-    shared: true,
-  },
-  {
-    label: '単価登録【ロット単価・商品別単価】',
+    label: '単価登録【数量・商品別単価】',
     path: '/products',
     icon: <PriceChangeRoundedIcon />,
     shared: true,
@@ -193,7 +186,7 @@ export default function SideNav({ open, onClose }) {
       <Divider />
       <Box sx={{ p: 2 }}>
         <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-          「緊急時小ロット対応」はメニューから削除し、製本スケジュールへ置き換えています。
+          計画書の印刷手配数を起点に、見積数量と納品完了後の在庫数を連動します。
         </Typography>
       </Box>
     </Drawer>

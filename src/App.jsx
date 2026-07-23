@@ -10,14 +10,13 @@ import Register from './pages/Register.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Search from './pages/Search.jsx';
 
-// 共有
+// 社内・川崎重工で共有
 import OrderPlans from './pages/shared/OrderPlans.jsx';
 import Products from './pages/shared/Products.jsx';
 import ProductDetail from './pages/shared/ProductDetail.jsx';
-import Plans from './pages/shared/Plans.jsx';
 import Packages from './pages/shared/Packages.jsx';
 
-// 社内
+// 社内専用
 import Estimates from './pages/internal/Estimates.jsx';
 import Dempyo from './pages/internal/Dempyo.jsx';
 import Inventory from './pages/internal/Inventory.jsx';
@@ -27,11 +26,11 @@ import BindingSchedule from './pages/internal/BindingSchedule.jsx';
 export default function App() {
   return (
     <Routes>
-      {/* Public */}
+      {/* 公開ページ */}
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
 
-      {/* Login required */}
+      {/* ログイン必須 */}
       <Route element={<RequireAuth />}>
         <Route element={<Layout />}>
           <Route path="/" element={<Dashboard />} />
@@ -41,7 +40,6 @@ export default function App() {
           <Route path="/order-plans" element={<OrderPlans />} />
           <Route path="/products" element={<Products />} />
           <Route path="/products/:id" element={<ProductDetail />} />
-          <Route path="/plans" element={<Plans />} />
           <Route path="/packages" element={<Packages />} />
 
           {/* 社内専用 */}
@@ -53,11 +51,9 @@ export default function App() {
             <Route path="/binding-schedule" element={<BindingSchedule />} />
           </Route>
 
-          {/* 旧URL互換：緊急時小ロット対応は製本スケジュールへ */}
-          <Route
-            path="/small-lot"
-            element={<Navigate to="/binding-schedule" replace />}
-          />
+          {/* 旧URL互換 */}
+          <Route path="/plans" element={<Navigate to="/order-plans" replace />} />
+          <Route path="/small-lot" element={<Navigate to="/binding-schedule" replace />} />
           <Route
             path="/emergency-small-lot"
             element={<Navigate to="/binding-schedule" replace />}
@@ -67,7 +63,7 @@ export default function App() {
         </Route>
       </Route>
 
-      {/* fallback */}
+      {/* 最終フォールバック */}
       <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>
   );

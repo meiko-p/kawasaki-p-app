@@ -38,84 +38,104 @@ const DELIVERY_FACTORY_OPTIONS = [
   { value: '86', label: '86工場' },
 ];
 
-/**
- * 1枚の計画書に登録する品番数の上限。
- * 今回の運用要件に合わせて5件にしています。
- * 将来6件以上必要になった場合は、この数字だけ変更してください。
- */
 const MAX_ITEMS_PER_PLAN = 5;
 
-const EMPTY_ITEM = {
-  itemId: null,
-  productCode: '',
-  productType: 'ENGINE',
-  productName: '',
-  deliveryFactory: '',
-  kawasakiOrderNo: '',
-  memo: '',
-};
+function createClientKey(prefix = 'draft') {
+  return (
+    globalThis.crypto?.randomUUID?.() ||
+    `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  );
+}
+
+function emptyItemForm() {
+  return {
+    editingKey: '',
+    itemId: null,
+    productCode: '',
+    productType: 'ENGINE',
+    productName: '',
+    printOrderQty: '',
+    deliveryFactory: '',
+    kawasakiOrderNo: '',
+    memo: '',
+  };
+}
 
 function todayIso() {
   const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
-function newScheduleLine(initial = {}) {
-  const generatedId =
-    globalThis.crypto?.randomUUID?.() ||
-    `line-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
+function createScheduleRow(initial = {}) {
   return {
-    id: String(initial.id || generatedId),
+    id: String(initial.id || createClientKey('line')),
     date: String(initial.date || ''),
     qty: initial.qty ?? '',
   };
 }
 
 function normalizeSchedule(raw) {
-  const source = Array.isArray(raw)
-    ? raw
-    : typeof raw === 'string'
-      ? (() => {
-          try {
-            const parsed = JSON.parse(raw);
-            return Array.isArray(parsed) ? parsed : [];
-          } catch {
-            return [];
-          }
-        })()
-      : [];
+  let source = [];
+
+  if (Array.isArray(raw)) {
+    source = raw;
+  } else if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      source = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      source = [];
+    }
+  }
 
   const rows = source.map((row) =>
-    newScheduleLine({
+    createScheduleRow({
       id: row?.id,
       date: row?.date,
       qty: row?.qty ?? row?.quantity ?? '',
     }),
   );
 
-  return rows.length > 0 ? rows : [newScheduleLine()];
+  return rows.length > 0 ? rows : [createScheduleRow()];
+}
+
+function normalizeNumberText(value) {
+  return String(value ?? '')
+    .trim()
+    .replace(/[０-９]/g, (char) =>
+      String.fromCharCode(char.charCodeAt(0) - 0xfee0),
+    )
+    .replace(/[，,]/g, '');
+}
+
+function parseNonNegativeInteger(value) {
+  const normalized = normalizeNumberText(value);
+  if (!normalized) return 0;
+
+  const match = normalized.match(/-?\d+/);
+  const numeric = match ? Number(match[0]) : 0;
+  return Number.isFinite(numeric) ? Math.max(0, Math.round(numeric)) : 0;
 }
 
 function buildSchedulePayload(rows) {
   return (rows || [])
     .map((row) => {
       const date = String(row?.date || '').trim();
-      const qtyText = String(row?.qty ?? '').trim().replace(/,/g, '');
+      const qtyText = normalizeNumberText(row?.qty);
 
       if (!date && !qtyText) return null;
 
-      const numericText = qtyText.replace(/[^\d-]/g, '');
-      const qtyNumber = Number(numericText);
+      const match = qtyText.match(/-?\d+/);
+      const qtyNumber = match ? Number(match[0]) : 0;
       const qty = Number.isFinite(qtyNumber)
         ? Math.max(0, Math.round(qtyNumber))
         : 0;
 
       return {
-        id: String(row?.id || newScheduleLine().id),
+        id: String(row?.id || createClientKey('line')),
         date: date || null,
         qty,
       };
@@ -131,11 +151,7 @@ function formatDateJa(value) {
     : String(value);
 
   const [year, month, day] = normalized.split('-');
-
-  if (!year || !month || !day) {
-    return String(value);
-  }
-
+  if (!year || !month || !day) return String(value);
   return `${year}/${month}/${day}`;
 }
 
@@ -163,9 +179,69 @@ function scheduleTotal(schedule) {
   return normalizeSchedule(schedule)
     .filter((row) => row.date || String(row.qty ?? '').trim())
     .reduce((sum, row) => {
-      const numeric = Number(String(row.qty ?? '').replace(/,/g, ''));
+      const match = normalizeNumberText(row.qty).match(/-?\d+/);
+      const numeric = match ? Number(match[0]) : 0;
       return sum + (Number.isFinite(numeric) ? numeric : 0);
     }, 0);
+}
+
+function editorHasAnyValue(itemForm, deliveryRows) {
+  return Boolean(
+    String(itemForm.productCode || '').trim() ||
+      String(itemForm.productName || '').trim() ||
+      String(itemForm.printOrderQty || '').trim() ||
+      String(itemForm.deliveryFactory || '').trim() ||
+      String(itemForm.kawasakiOrderNo || '').trim() ||
+      String(itemForm.memo || '').trim() ||
+      buildSchedulePayload(deliveryRows).length > 0,
+  );
+}
+
+function validateItemDraft(item) {
+  const productCode = String(item.productCode || '').trim();
+  const productName = String(item.productName || '').trim();
+  const productType = String(item.productType || '').trim();
+
+  if (!productCode || !productType || !productName) {
+    throw new Error(
+      '品番・商品種類・商品名の3項目をすべて入力してください。',
+    );
+  }
+
+  if (!['ENGINE', 'OM', 'OTHER'].includes(productType)) {
+    throw new Error(`商品種類が正しくありません（品番：${productCode}）。`);
+  }
+
+  const printOrderQty = parseNonNegativeInteger(item.printOrderQty);
+  if (printOrderQty <= 0) {
+    throw new Error(`印刷手配数を1以上で入力してください（品番：${productCode}）。`);
+  }
+}
+
+function validateDraftCollection(items) {
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new Error('品番明細を1件以上「入力中一覧へ追加」してください。');
+  }
+
+  if (items.length > MAX_ITEMS_PER_PLAN) {
+    throw new Error(
+      `1つの計画書に登録できる品番は最大${MAX_ITEMS_PER_PLAN}件です。`,
+    );
+  }
+
+  items.forEach(validateItemDraft);
+
+  const normalizedCodes = items.map((item) =>
+    String(item.productCode || '').trim().toLowerCase(),
+  );
+
+  const duplicateCode = normalizedCodes.find(
+    (code, index) => normalizedCodes.indexOf(code) !== index,
+  );
+
+  if (duplicateCode) {
+    throw new Error('同じ計画書内に同一品番が重複しています。');
+  }
 }
 
 async function createSignedUrl(path) {
@@ -176,6 +252,7 @@ async function createSignedUrl(path) {
     .createSignedUrl(path, 60 * 60 * 24 * 7);
 
   if (error) {
+    // eslint-disable-next-line no-console
     console.error('[createSignedUrl]', error);
     return '';
   }
@@ -183,12 +260,28 @@ async function createSignedUrl(path) {
   return data?.signedUrl || '';
 }
 
+function toDraftItem(dbItem, index) {
+  return {
+    clientKey: createClientKey('loaded'),
+    itemId: dbItem.id,
+    productCode: dbItem.product?.product_code || '',
+    productType: dbItem.product?.product_type || 'ENGINE',
+    productName: dbItem.product?.name || '',
+    printOrderQty: dbItem.print_order_qty ?? '',
+    deliveryFactory: dbItem.delivery_factory || '',
+    kawasakiOrderNo: dbItem.kawasaki_order_no || '',
+    memo: dbItem.memo || '',
+    deliverySchedule: normalizeSchedule(dbItem.delivery_schedule),
+    sortOrder: dbItem.sort_order ?? index,
+    dirty: false,
+  };
+}
+
 export default function OrderPlans() {
   const { user } = useAuth();
 
   const [loading, setLoading] = useState(false);
-  const [savingPlan, setSavingPlan] = useState(false);
-  const [savingItem, setSavingItem] = useState(false);
+  const [savingAll, setSavingAll] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
@@ -205,34 +298,64 @@ export default function OrderPlans() {
   const [localImageUrl, setLocalImageUrl] = useState('');
   const [imageZoom, setImageZoom] = useState(100);
 
-  const [items, setItems] = useState([]);
-  const [itemForm, setItemForm] = useState(EMPTY_ITEM);
-  const [deliveryRows, setDeliveryRows] = useState([
-    newScheduleLine(),
-  ]);
-  const [expandedItemId, setExpandedItemId] = useState('');
+  const [draftItems, setDraftItems] = useState([]);
+  const [itemForm, setItemForm] = useState(emptyItemForm());
+  const [deliveryRows, setDeliveryRows] = useState([createScheduleRow()]);
+  const [expandedItemKey, setExpandedItemKey] = useState('');
+  const [dirty, setDirty] = useState(false);
+
+  /**
+   * 未保存状態は state と ref の両方で保持します。
+   * ref を使う理由：dirty が変わるたびに loadPlan の参照が変わると、
+   * 初期読込 useEffect が再実行され、入力した文字や削除した明細が
+   * DBの内容で上書きされてしまうためです。
+   */
+  const dirtyRef = useRef(false);
+
+  const markDirty = useCallback(() => {
+    dirtyRef.current = true;
+    setDirty(true);
+  }, []);
+
+  const markClean = useCallback(() => {
+    dirtyRef.current = false;
+    setDirty(false);
+  }, []);
+
+  // state が別経路から変更された場合にも ref を同期する保険です。
+  useEffect(() => {
+    dirtyRef.current = dirty;
+  }, [dirty]);
 
   const editorRef = useRef(null);
   const productCodeInputRef = useRef(null);
   const imageViewportRef = useRef(null);
+  const uploadFolderKeyRef = useRef(createClientKey('plan'));
 
   const selectedPlan = useMemo(
-    () =>
-      planList.find((plan) => plan.id === selectedPlanId) || null,
+    () => planList.find((plan) => plan.id === selectedPlanId) || null,
     [planList, selectedPlanId],
   );
+
+  const displayedImageUrl = localImageUrl || currentImageUrl;
 
   const cleanDeliveryRows = useMemo(
     () => buildSchedulePayload(deliveryRows),
     [deliveryRows],
   );
 
-  const displayedImageUrl = localImageUrl || currentImageUrl;
+  const isEditingDraft = Boolean(itemForm.editingKey);
 
-  const isEditingItem = Boolean(itemForm.itemId);
+  const hasEditorContent = useMemo(
+    () => editorHasAnyValue(itemForm, deliveryRows),
+    [itemForm, deliveryRows],
+  );
 
-  const canAddNewItem =
-    isEditingItem || items.length < MAX_ITEMS_PER_PLAN;
+  const currentTotalCount =
+    draftItems.length + (hasEditorContent && !isEditingDraft ? 1 : 0);
+
+  const canAddAnotherDraft =
+    isEditingDraft || draftItems.length < MAX_ITEMS_PER_PLAN;
 
   const clearMessages = useCallback(() => {
     setError('');
@@ -245,39 +368,53 @@ export default function OrderPlans() {
         behavior: 'smooth',
         block: 'start',
       });
-
       productCodeInputRef.current?.focus();
     }, 100);
   }, []);
 
-  const resetItemForm = useCallback(() => {
-    setItemForm(EMPTY_ITEM);
-    setDeliveryRows([newScheduleLine()]);
-    setExpandedItemId('');
+  const resetItemEditor = useCallback(() => {
+    setItemForm(emptyItemForm());
+    setDeliveryRows([createScheduleRow()]);
+    setExpandedItemKey('');
   }, []);
 
-  const resetPlanForm = useCallback(() => {
-    clearMessages();
+  const confirmDiscardIfDirty = useCallback(() => {
+    if (!dirtyRef.current) return true;
 
-    setSelectedPlanId('');
-    setPlanDate(todayIso());
-    setPlanTitle('計画書（発注）');
-    setPlanNote('');
+    return window.confirm(
+      'まだ「計画書セットをまとめて保存」していない変更があります。破棄して移動しますか？',
+    );
+  }, []);
 
-    setCurrentImagePath('');
-    setCurrentImageUrl('');
-    setImageFile(null);
-    setImageInputKey((previous) => previous + 1);
-    setImageZoom(100);
+  const resetPlanForm = useCallback(
+    (force = false) => {
+      if (!force && !confirmDiscardIfDirty()) return false;
 
-    setItems([]);
-    resetItemForm();
-  }, [clearMessages, resetItemForm]);
+      clearMessages();
+      setSelectedPlanId('');
+      setPlanDate(todayIso());
+      setPlanTitle('計画書（発注）');
+      setPlanNote('');
+      setCurrentImagePath('');
+      setCurrentImageUrl('');
+      setImageFile(null);
+      setImageInputKey((previous) => previous + 1);
+      setImageZoom(100);
+      setDraftItems([]);
+      resetItemEditor();
+      markClean();
+      uploadFolderKeyRef.current = createClientKey('plan');
 
-  /**
-   * 選択直後の画像を画面へプレビューします。
-   * 画像を変更した場合は以前のObject URLを解放します。
-   */
+      return true;
+    },
+    [
+      clearMessages,
+      confirmDiscardIfDirty,
+      markClean,
+      resetItemEditor,
+    ],
+  );
+
   useEffect(() => {
     if (!imageFile) {
       setLocalImageUrl('');
@@ -285,7 +422,6 @@ export default function OrderPlans() {
     }
 
     const objectUrl = URL.createObjectURL(imageFile);
-
     setLocalImageUrl(objectUrl);
 
     return () => {
@@ -307,32 +443,33 @@ export default function OrderPlans() {
           updated_at
         `,
       )
-      .order('plan_date', { ascending: false });
+      .order('plan_date', { ascending: false })
+      .order('updated_at', { ascending: false });
 
-    if (fetchError) {
-      throw fetchError;
-    }
+    if (fetchError) throw fetchError;
 
     setPlanList(data || []);
-
     return data || [];
   }, []);
 
   const loadPlan = useCallback(
-    async (planId) => {
+    async (planId, options = {}) => {
+      const { skipDirtyConfirm = false } = options;
+
+      if (!skipDirtyConfirm && !confirmDiscardIfDirty()) {
+        return false;
+      }
+
       if (!planId) {
-        resetPlanForm();
-        return;
+        resetPlanForm(true);
+        return true;
       }
 
       setLoading(true);
       clearMessages();
 
       try {
-        const [
-          { data: plan, error: planError },
-          { data: planItems, error: itemError },
-        ] = await Promise.all([
+        const [planResult, itemResult] = await Promise.all([
           supabase
             .from('order_plans')
             .select(
@@ -356,6 +493,7 @@ export default function OrderPlans() {
                 id,
                 order_plan_id,
                 product_id,
+                print_order_qty,
                 delivery_factory,
                 kawasaki_order_no,
                 delivery_schedule,
@@ -378,53 +516,48 @@ export default function OrderPlans() {
             .order('created_at', { ascending: true }),
         ]);
 
-        if (planError) {
-          throw planError;
-        }
+        if (planResult.error) throw planResult.error;
+        if (itemResult.error) throw itemResult.error;
 
-        if (itemError) {
-          throw itemError;
-        }
+        const plan = planResult.data;
+        const items = itemResult.data || [];
 
         setSelectedPlanId(plan.id);
         setPlanDate(plan.plan_date || todayIso());
         setPlanTitle(plan.title || '計画書（発注）');
         setPlanNote(plan.note || '');
-
         setCurrentImagePath(plan.image_path || '');
-        setCurrentImageUrl(
-          await createSignedUrl(plan.image_path),
-        );
-
+        setCurrentImageUrl(await createSignedUrl(plan.image_path));
         setImageFile(null);
         setImageInputKey((previous) => previous + 1);
         setImageZoom(100);
+        setDraftItems(items.map(toDraftItem));
+        resetItemEditor();
+        markClean();
+        uploadFolderKeyRef.current = plan.id;
 
-        setItems(planItems || []);
-        setExpandedItemId('');
-
-        resetItemForm();
+        return true;
       } catch (loadError) {
+        // eslint-disable-next-line no-console
         console.error(loadError);
-
-        setError(
-          loadError?.message ||
-            '計画書の読み込みに失敗しました',
-        );
+        setError(loadError?.message || '計画書の読み込みに失敗しました。');
+        return false;
       } finally {
         setLoading(false);
       }
     },
     [
       clearMessages,
-      resetItemForm,
+      confirmDiscardIfDirty,
+      markClean,
+      resetItemEditor,
       resetPlanForm,
     ],
   );
 
   /**
-   * 最初の画面表示時に、
-   * 最新の計画書を自動的に読み込みます。
+   * 初期読込。loadPlan は dirtyRef を参照する安定した関数なので、
+   * 入力や削除で dirty が変化しても、この effect は再実行されません。
    */
   useEffect(() => {
     let active = true;
@@ -434,25 +567,19 @@ export default function OrderPlans() {
 
       try {
         const list = await loadPlanList();
-
         if (!active) return;
 
         if (list.length > 0) {
-          await loadPlan(list[0].id);
+          await loadPlan(list[0].id, { skipDirtyConfirm: true });
         }
       } catch (initialError) {
         if (!active) return;
 
+        // eslint-disable-next-line no-console
         console.error(initialError);
-
-        setError(
-          initialError?.message ||
-            '計画書一覧の取得に失敗しました',
-        );
+        setError(initialError?.message || '計画書一覧の取得に失敗しました。');
       } finally {
-        if (active) {
-          setLoading(false);
-        }
+        if (active) setLoading(false);
       }
     })();
 
@@ -461,465 +588,302 @@ export default function OrderPlans() {
     };
   }, [loadPlan, loadPlanList]);
 
-  /**
-   * 計画書のヘッダを確定します。
-   * 新規の場合はplan_dateをキーに作成し、
-   * 既存の場合は選択中IDを更新します。
-   */
-  const ensurePlanSaved = useCallback(async () => {
-    if (!planDate) {
-      throw new Error(
-        '計画書の日付を入力してください',
-      );
-    }
-
-    const payload = {
-      plan_date: planDate,
-
-      title:
-        String(
-          planTitle || '計画書（発注）',
-        ).trim() || '計画書（発注）',
-
-      note:
-        String(planNote || '').trim() || null,
-
-      updated_by: user?.id || null,
-    };
-
-    let saved;
-
-    if (selectedPlanId) {
-      const { data, error: updateError } =
-        await supabase
-          .from('order_plans')
-          .update(payload)
-          .eq('id', selectedPlanId)
-          .select(
-            `
-              id,
-              plan_date,
-              title,
-              image_path,
-              note,
-              created_at,
-              updated_at
-            `,
-          )
-          .single();
-
-      if (updateError) {
-        throw updateError;
-      }
-
-      saved = data;
-    } else {
-      const { data, error: upsertError } =
-        await supabase
-          .from('order_plans')
-          .upsert(
-            {
-              ...payload,
-              created_by: user?.id || null,
-            },
-            {
-              onConflict: 'plan_date',
-            },
-          )
-          .select(
-            `
-              id,
-              plan_date,
-              title,
-              image_path,
-              note,
-              created_at,
-              updated_at
-            `,
-          )
-          .single();
-
-      if (upsertError) {
-        throw upsertError;
-      }
-
-      saved = data;
-    }
-
-    setSelectedPlanId(saved.id);
-
-    setCurrentImagePath(
-      saved.image_path ||
-        currentImagePath ||
-        '',
-    );
-
-    return saved;
-  }, [
-    currentImagePath,
-    planDate,
-    planNote,
-    planTitle,
-    selectedPlanId,
-    user?.id,
-  ]);
-
-  /**
-   * 計画書ヘッダと画像を保存します。
-   *
-   * 「手配追加」を押した場合も、
-   * この処理を先に実行します。
-   *
-   * そのため、
-   * ・計画書日付
-   * ・画像
-   * ・見出し
-   * ・計画書メモ
-   * ・品番明細
-   *
-   * が同じ計画書セットに保存されます。
-   */
-  const persistPlanHeaderAndPhoto =
-    useCallback(async () => {
-      const savedPlan = await ensurePlanSaved();
-
-      let imagePath =
-        savedPlan.image_path ||
-        currentImagePath ||
-        null;
-
-      if (imageFile) {
-        const path =
-          `shared/order-plans/` +
-          `${savedPlan.id}/` +
-          `${Date.now()}_` +
-          `${safeFileName(imageFile.name)}`;
-
-        const { error: uploadError } =
-          await supabase.storage
-            .from('app-files')
-            .upload(path, imageFile, {
-              upsert: true,
-              contentType:
-                imageFile.type ||
-                'image/jpeg',
-            });
-
-        if (uploadError) {
-          throw uploadError;
-        }
-
-        imagePath = path;
-      }
-
-      const {
-        data: updatedPlan,
-        error: updateError,
-      } = await supabase
-        .from('order_plans')
-        .update({
-          image_path: imagePath,
-          updated_by: user?.id || null,
-        })
-        .eq('id', savedPlan.id)
-        .select(
-          `
-            id,
-            plan_date,
-            title,
-            image_path,
-            note,
-            created_at,
-            updated_at
-          `,
-        )
-        .single();
-
-      if (updateError) {
-        throw updateError;
-      }
-
-      setCurrentImagePath(
-        updatedPlan.image_path || '',
-      );
-
-      setCurrentImageUrl(
-        await createSignedUrl(
-          updatedPlan.image_path,
-        ),
-      );
-
-      setImageFile(null);
-      setImageInputKey(
-        (previous) => previous + 1,
-      );
-
-      await loadPlanList();
-
-      return updatedPlan;
-    }, [
-      currentImagePath,
-      ensurePlanSaved,
-      imageFile,
-      loadPlanList,
-      user?.id,
-    ]);
-
-  const savePlanHeaderAndPhoto = async () => {
-    setSavingPlan(true);
-    clearMessages();
-
-    try {
-      await persistPlanHeaderAndPhoto();
-
-      setSuccess(
-        '計画書の日付・画像・メモを保存しました',
-      );
-    } catch (saveError) {
-      console.error(saveError);
-
-      setError(
-        saveError?.message ||
-          '計画書の保存に失敗しました',
-      );
-    } finally {
-      setSavingPlan(false);
-    }
-  };
-
   const addDeliveryRow = () => {
-    setDeliveryRows((previous) => [
-      ...previous,
-      newScheduleLine(),
-    ]);
+    setDeliveryRows((previous) => [...previous, createScheduleRow()]);
+    markDirty();
   };
 
   const updateDeliveryRow = (id, patch) => {
     setDeliveryRows((previous) =>
-      previous.map((row) =>
-        row.id === id
-          ? {
-              ...row,
-              ...patch,
-            }
-          : row,
-      ),
+      previous.map((row) => (row.id === id ? { ...row, ...patch } : row)),
     );
+    markDirty();
   };
 
   const removeDeliveryRow = (id) => {
     setDeliveryRows((previous) => {
-      const next = previous.filter(
-        (row) => row.id !== id,
-      );
-
-      return next.length > 0
-        ? next
-        : [newScheduleLine()];
+      const next = previous.filter((row) => row.id !== id);
+      return next.length > 0 ? next : [createScheduleRow()];
     });
+    markDirty();
   };
 
-  /**
-   * 品番・納品予定を保存します。
-   *
-   * 保存時に計画書ヘッダと画像も保存するため、
-   * 計画書セットとして一括で紐づきます。
-   */
-  const saveItem = async () => {
-    const code = String(
-      itemForm.productCode || '',
-    ).trim();
+  const buildItemFromEditor = useCallback(() => {
+    const draft = {
+      clientKey: itemForm.editingKey || createClientKey('item'),
+      itemId: itemForm.itemId || null,
+      productCode: String(itemForm.productCode || '').trim(),
+      productType: itemForm.productType || 'ENGINE',
+      productName: String(itemForm.productName || '').trim(),
+      printOrderQty: parseNonNegativeInteger(itemForm.printOrderQty),
+      deliveryFactory: itemForm.deliveryFactory || '',
+      kawasakiOrderNo: String(itemForm.kawasakiOrderNo || '').trim(),
+      memo: String(itemForm.memo || '').trim(),
+      deliverySchedule: deliveryRows.map((row) => ({ ...row })),
+      dirty: true,
+    };
 
-    const name = String(
-      itemForm.productName || '',
-    ).trim();
+    validateItemDraft(draft);
+    return draft;
+  }, [deliveryRows, itemForm]);
 
-    if (
-      !code ||
-      !itemForm.productType ||
-      !name
-    ) {
-      setError(
-        '品番・商品種類・商品名の3項目をすべて入力してください',
-      );
-      return;
-    }
-
-    if (
-      !isEditingItem &&
-      items.length >= MAX_ITEMS_PER_PLAN
-    ) {
-      setError(
-        `1枚の計画書に登録できる品番は最大${MAX_ITEMS_PER_PLAN}件です。` +
-          '既存明細を修正するか、別の日付の計画書を作成してください。',
-      );
-      return;
-    }
-
-    setSavingItem(true);
+  const addOrUpdateDraft = () => {
     clearMessages();
 
-    const wasEditing =
-      Boolean(itemForm.itemId);
-
     try {
-      const savedPlan =
-        await persistPlanHeaderAndPhoto();
+      const draft = buildItemFromEditor();
 
-      const existingItem =
-        itemForm.itemId
-          ? items.find(
-              (item) =>
-                item.id === itemForm.itemId,
-            )
-          : null;
-
-      const { error: rpcError } =
-        await supabase.rpc(
-          'save_order_plan_item',
-          {
-            p_order_plan_id: savedPlan.id,
-
-            p_item_id:
-              itemForm.itemId || null,
-
-            p_product_code: code,
-
-            p_product_type:
-              itemForm.productType,
-
-            p_product_name: name,
-
-            p_delivery_factory:
-              itemForm.deliveryFactory ||
-              null,
-
-            p_kawasaki_order_no:
-              String(
-                itemForm.kawasakiOrderNo ||
-                  '',
-              ).trim() || null,
-
-            p_delivery_schedule:
-              cleanDeliveryRows,
-
-            p_memo:
-              String(
-                itemForm.memo || '',
-              ).trim() || null,
-
-            p_sort_order:
-              existingItem?.sort_order ??
-              items.length,
-          },
+      if (!isEditingDraft && draftItems.length >= MAX_ITEMS_PER_PLAN) {
+        throw new Error(
+          `1つの計画書に追加できる品番は最大${MAX_ITEMS_PER_PLAN}件です。`,
         );
-
-      if (rpcError) {
-        throw rpcError;
       }
 
-      await loadPlanList();
-      await loadPlan(savedPlan.id);
+      const duplicate = draftItems.find(
+        (item) =>
+          item.clientKey !== draft.clientKey &&
+          String(item.productCode || '').trim().toLowerCase() ===
+            draft.productCode.toLowerCase(),
+      );
 
+      if (duplicate) {
+        throw new Error('同じ計画書内に同一品番を2件追加できません。');
+      }
+
+      setDraftItems((previous) => {
+        const existingIndex = previous.findIndex(
+          (item) => item.clientKey === draft.clientKey,
+        );
+
+        if (existingIndex >= 0) {
+          return previous.map((item, index) =>
+            index === existingIndex
+              ? { ...draft, sortOrder: existingIndex }
+              : item,
+          );
+        }
+
+        return [...previous, { ...draft, sortOrder: previous.length }];
+      });
+
+      resetItemEditor();
+      markDirty();
       setSuccess(
-        wasEditing
-          ? '手配明細を更新しました。計画書セットへ反映済みです。'
-          : '手配明細を追加しました。入力欄を空にしたので、続けて次の品番を入力できます。',
+        isEditingDraft
+          ? '入力中一覧の明細を更新しました。まだSupabaseには保存されていません。'
+          : '入力中一覧へ追加しました。続けて次の品番を入力できます。',
       );
-
       focusItemEditor();
-    } catch (saveError) {
-      console.error(saveError);
-
-      setError(
-        saveError?.message ||
-          '手配明細の保存に失敗しました',
-      );
-    } finally {
-      setSavingItem(false);
+    } catch (draftError) {
+      setError(draftError?.message || '入力内容を確認してください。');
     }
   };
 
-  const editItem = (item) => {
+  const editDraft = (item) => {
     clearMessages();
 
     setItemForm({
-      itemId: item.id,
-
-      productCode:
-        item.product?.product_code || '',
-
-      productType:
-        item.product?.product_type ||
-        'ENGINE',
-
-      productName:
-        item.product?.name || '',
-
-      deliveryFactory:
-        item.delivery_factory || '',
-
-      kawasakiOrderNo:
-        item.kawasaki_order_no || '',
-
-      memo: item.memo || '',
+      editingKey: item.clientKey,
+      itemId: item.itemId || null,
+      productCode: item.productCode,
+      productType: item.productType,
+      productName: item.productName,
+      printOrderQty: String(item.printOrderQty ?? ''),
+      deliveryFactory: item.deliveryFactory,
+      kawasakiOrderNo: item.kawasakiOrderNo,
+      memo: item.memo,
     });
-
-    setDeliveryRows(
-      normalizeSchedule(
-        item.delivery_schedule,
-      ),
-    );
-
-    setExpandedItemId(item.id);
-
+    setDeliveryRows(normalizeSchedule(item.deliverySchedule));
+    setExpandedItemKey(item.clientKey);
     focusItemEditor();
   };
 
-  const deleteItem = async (item) => {
-    const code =
-      item.product?.product_code || '';
-
+  const removeDraft = (item) => {
     if (
       !window.confirm(
-        `品番「${code}」の手配明細を削除します。よろしいですか？`,
+        `品番「${item.productCode}」を入力中一覧から削除します。\n最後にまとめて保存するとSupabase側からも削除されます。`,
       )
     ) {
       return;
     }
 
-    setLoading(true);
+    setDraftItems((previous) =>
+      previous.filter((row) => row.clientKey !== item.clientKey),
+    );
+
+    setExpandedItemKey((previous) =>
+      previous === item.clientKey ? '' : previous,
+    );
+
+    if (itemForm.editingKey === item.clientKey) {
+      resetItemEditor();
+    }
+
+    markDirty();
+    setSuccess(
+      '入力中一覧から削除しました。最後にまとめて保存してください。',
+    );
+  };
+
+  const beginNextItem = () => {
+    clearMessages();
+    resetItemEditor();
+    focusItemEditor();
+  };
+
+  const collectItemsForFinalSave = useCallback(() => {
+    let nextItems = draftItems.map((item) => ({ ...item }));
+
+    if (hasEditorContent) {
+      const currentDraft = buildItemFromEditor();
+      const existingIndex = nextItems.findIndex(
+        (item) => item.clientKey === currentDraft.clientKey,
+      );
+
+      if (existingIndex >= 0) {
+        nextItems = nextItems.map((item, index) =>
+          index === existingIndex
+            ? { ...currentDraft, sortOrder: existingIndex }
+            : item,
+        );
+      } else {
+        nextItems = [
+          ...nextItems,
+          { ...currentDraft, sortOrder: nextItems.length },
+        ];
+      }
+    }
+
+    nextItems = nextItems.map((item, index) => ({
+      ...item,
+      sortOrder: index,
+    }));
+
+    validateDraftCollection(nextItems);
+    return nextItems;
+  }, [buildItemFromEditor, draftItems, hasEditorContent]);
+
+  const saveWholePlan = async () => {
     clearMessages();
 
+    if (!planDate) {
+      setError('計画書日付を入力してください。');
+      return;
+    }
+
+    let itemsToSave;
+
     try {
-      const { error: deleteError } =
-        await supabase
-          .from('order_plan_items')
-          .delete()
-          .eq('id', item.id);
+      itemsToSave = collectItemsForFinalSave();
+    } catch (validationError) {
+      setError(validationError?.message || '入力内容を確認してください。');
+      return;
+    }
 
-      if (deleteError) {
-        throw deleteError;
+    setSavingAll(true);
+    let newlyUploadedPath = '';
+
+    try {
+      let imagePath = currentImagePath || null;
+
+      if (imageFile) {
+        const folderKey = selectedPlanId || uploadFolderKeyRef.current;
+
+        newlyUploadedPath =
+          `shared/order-plans/${folderKey}/` +
+          `${Date.now()}_${safeFileName(imageFile.name)}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from('app-files')
+          .upload(newlyUploadedPath, imageFile, {
+            upsert: true,
+            contentType: imageFile.type || 'image/jpeg',
+          });
+
+        if (uploadError) throw uploadError;
+        imagePath = newlyUploadedPath;
       }
 
-      if (itemForm.itemId === item.id) {
-        resetItemForm();
+      const itemsPayload = itemsToSave.map((item, index) => ({
+        itemId: item.itemId || null,
+        productCode: String(item.productCode || '').trim(),
+        productType: item.productType,
+        productName: String(item.productName || '').trim(),
+        printOrderQty: parseNonNegativeInteger(item.printOrderQty),
+        deliveryFactory: item.deliveryFactory || null,
+        kawasakiOrderNo:
+          String(item.kawasakiOrderNo || '').trim() || null,
+        memo: String(item.memo || '').trim() || null,
+        deliverySchedule: buildSchedulePayload(item.deliverySchedule),
+        sortOrder: index,
+      }));
+
+      const { data, error: rpcError } = await supabase.rpc(
+        'save_order_plan_bundle',
+        {
+          p_plan_id: selectedPlanId || null,
+          p_plan_date: planDate,
+          p_title:
+            String(planTitle || '').trim() || '計画書（発注）',
+          p_note: String(planNote || '').trim() || null,
+          p_image_path: imagePath,
+          p_items: itemsPayload,
+        },
+      );
+
+      if (rpcError) throw rpcError;
+
+      const savedPlanId = data?.plan_id || selectedPlanId;
+
+      if (!savedPlanId) {
+        throw new Error('保存後の計画書IDを取得できませんでした。');
       }
 
-      await loadPlan(selectedPlanId);
+      if (
+        newlyUploadedPath &&
+        currentImagePath &&
+        currentImagePath !== newlyUploadedPath
+      ) {
+        const { error: oldImageDeleteError } = await supabase.storage
+          .from('app-files')
+          .remove([currentImagePath]);
+
+        if (oldImageDeleteError) {
+          // eslint-disable-next-line no-console
+          console.warn('[old image cleanup]', oldImageDeleteError);
+        }
+      }
+
+      setImageFile(null);
+      setImageInputKey((previous) => previous + 1);
+      resetItemEditor();
+      markClean();
+
+      await loadPlanList();
+      await loadPlan(savedPlanId, { skipDirtyConfirm: true });
 
       setSuccess(
-        '手配明細を削除しました',
+        `計画書画像・基本情報・${itemsPayload.length}件の品番明細を、1回でまとめて保存しました。`,
       );
-    } catch (deleteError) {
-      console.error(deleteError);
+    } catch (saveError) {
+      if (newlyUploadedPath) {
+        const { error: cleanupError } = await supabase.storage
+          .from('app-files')
+          .remove([newlyUploadedPath]);
 
+        if (cleanupError) {
+          // eslint-disable-next-line no-console
+          console.warn('[failed upload cleanup]', cleanupError);
+        }
+      }
+
+      // eslint-disable-next-line no-console
+      console.error(saveError);
       setError(
-        deleteError?.message ||
-          '手配明細の削除に失敗しました',
+        saveError?.message || '計画書セットの保存に失敗しました。',
       );
     } finally {
-      setLoading(false);
+      setSavingAll(false);
     }
   };
 
@@ -928,7 +892,7 @@ export default function OrderPlans() {
 
     if (
       !window.confirm(
-        `${planDate} の計画書を明細ごと削除します。よろしいですか？`,
+        `${planDate} の計画書を、登録品番を含めて削除します。よろしいですか？`,
       )
     ) {
       return;
@@ -938,56 +902,45 @@ export default function OrderPlans() {
     clearMessages();
 
     try {
-      const { error: deleteError } =
-        await supabase
-          .from('order_plans')
-          .delete()
-          .eq('id', selectedPlanId);
+      const { error: deleteError } = await supabase
+        .from('order_plans')
+        .delete()
+        .eq('id', selectedPlanId);
 
-      if (deleteError) {
-        throw deleteError;
+      if (deleteError) throw deleteError;
+
+      if (currentImagePath) {
+        const { error: imageDeleteError } = await supabase.storage
+          .from('app-files')
+          .remove([currentImagePath]);
+
+        if (imageDeleteError) {
+          // eslint-disable-next-line no-console
+          console.warn('[plan image cleanup]', imageDeleteError);
+        }
       }
 
-      const list =
-        await loadPlanList();
+      const list = await loadPlanList();
 
       if (list.length > 0) {
-        await loadPlan(list[0].id);
+        await loadPlan(list[0].id, { skipDirtyConfirm: true });
       } else {
-        resetPlanForm();
+        resetPlanForm(true);
       }
 
-      setSuccess(
-        '計画書を削除しました',
-      );
+      setSuccess('計画書を削除しました。');
     } catch (deleteError) {
+      // eslint-disable-next-line no-console
       console.error(deleteError);
-
-      setError(
-        deleteError?.message ||
-          '計画書の削除に失敗しました',
-      );
+      setError(deleteError?.message || '計画書の削除に失敗しました。');
     } finally {
       setLoading(false);
     }
   };
 
-  /**
-   * 現在の編集を解除し、
-   * 次の商品入力用の空フォームへ戻します。
-   */
-  const beginNextItem = () => {
-    clearMessages();
-    resetItemForm();
-    focusItemEditor();
-  };
-
   const zoomImage = (delta) => {
     setImageZoom((previous) =>
-      Math.min(
-        250,
-        Math.max(50, previous + delta),
-      ),
+      Math.min(250, Math.max(50, previous + delta)),
     );
   };
 
@@ -1000,227 +953,122 @@ export default function OrderPlans() {
   };
 
   return (
-    <Box
-      sx={{
-        p: {
-          xs: 1,
-          md: 2,
-        },
-      }}
-    >
+    <Box sx={{ p: { xs: 1, md: 2 } }}>
       <Stack spacing={2}>
-        {/* ページ見出し */}
-        <Box>
-          <Stack
-            direction={{
-              xs: 'column',
-              md: 'row',
-            }}
-            spacing={1}
-            alignItems={{
-              md: 'center',
-            }}
-          >
-            <Box sx={{ flex: 1 }}>
-              <Typography
-                variant="h4"
-                fontWeight={900}
-              >
-                計画書（発注）【スタート】
-              </Typography>
+        <Stack
+          direction={{ xs: 'column', md: 'row' }}
+          spacing={1}
+          alignItems={{ md: 'center' }}
+        >
+          <Box sx={{ flex: 1 }}>
+            <Typography variant="h4" fontWeight={900}>
+              計画書（発注）【スタート】
+            </Typography>
+            <Typography
+              variant="body2"
+              sx={{ mt: 0.5, color: 'text.secondary' }}
+            >
+              計画書画像を見ながら最大{MAX_ITEMS_PER_PLAN}
+              品番を入力し、最後に1つの保存ボタンで一括保存します。
+            </Typography>
+          </Box>
 
-              <Typography
-                variant="body2"
-                sx={{
-                  mt: 0.5,
-                  color: 'text.secondary',
-                }}
-              >
-                計画書画像を左に固定表示しながら、右側で最大
-                {MAX_ITEMS_PER_PLAN}
-                品番と各品番の納品予定を入力します。
-              </Typography>
-            </Box>
+          <Chip
+            color={dirty ? 'warning' : 'success'}
+            variant="outlined"
+            label={dirty ? '未保存の変更あり' : '保存済み'}
+          />
+          <Chip
+            color={
+              currentTotalCount >= MAX_ITEMS_PER_PLAN
+                ? 'warning'
+                : 'primary'
+            }
+            variant="outlined"
+            label={`${currentTotalCount}/${MAX_ITEMS_PER_PLAN}品番`}
+          />
+        </Stack>
 
-            <Chip
-              color={
-                items.length >=
-                MAX_ITEMS_PER_PLAN
-                  ? 'warning'
-                  : 'primary'
-              }
-              variant="outlined"
-              label={
-                `選択中の計画書：` +
-                `${items.length}/` +
-                `${MAX_ITEMS_PER_PLAN}品番`
-              }
-            />
-          </Stack>
-        </Box>
+        {error && <Alert severity="error">{error}</Alert>}
+        {success && <Alert severity="success">{success}</Alert>}
 
-        {error && (
-          <Alert severity="error">
-            {error}
-          </Alert>
-        )}
-
-        {success && (
-          <Alert severity="success">
-            {success}
-          </Alert>
-        )}
-
-        {loading && (
-          <Stack
-            direction="row"
-            spacing={1}
-            alignItems="center"
-          >
+        {(loading || savingAll) && (
+          <Stack direction="row" spacing={1} alignItems="center">
             <CircularProgress size={18} />
-
             <Typography variant="body2">
-              処理中…
+              {savingAll ? '計画書セットを一括保存中…' : '処理中…'}
             </Typography>
           </Stack>
         )}
 
-        {/* ① 計画書セット選択 */}
         <Paper sx={{ p: 2 }}>
-          <Stack spacing={2}>
-            <Stack
-              direction={{
-                xs: 'column',
-                md: 'row',
-              }}
-              spacing={2}
-              alignItems={{
-                md: 'center',
-              }}
-            >
-              <Box
-                sx={{
-                  minWidth: {
-                    md: 240,
-                  },
-                }}
+          <Stack
+            direction={{ xs: 'column', md: 'row' }}
+            spacing={2}
+            alignItems={{ md: 'center' }}
+          >
+            <Box sx={{ minWidth: { md: 250 } }}>
+              <Typography variant="h6" fontWeight={900}>
+                ① 計画書セットを選択
+              </Typography>
+              <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                日付を選ぶと、画像・基本情報・全品番を一式で呼び出します。
+              </Typography>
+            </Box>
+
+            <FormControl fullWidth>
+              <InputLabel id="saved-plan-label">保存済み日付</InputLabel>
+              <Select
+                labelId="saved-plan-label"
+                label="保存済み日付"
+                value={selectedPlanId}
+                onChange={(event) => loadPlan(event.target.value)}
               >
-                <Typography
-                  variant="h6"
-                  fontWeight={900}
-                >
-                  ① 計画書セットを選択
-                </Typography>
-
-                <Typography
-                  variant="body2"
-                  sx={{
-                    color: 'text.secondary',
-                  }}
-                >
-                  日付を選ぶと、画像と登録済み品番を一式で呼び出します。
-                </Typography>
-              </Box>
-
-              <FormControl fullWidth>
-                <InputLabel id="saved-plan-label">
-                  保存済み日付
-                </InputLabel>
-
-                <Select
-                  labelId="saved-plan-label"
-                  label="保存済み日付"
-                  value={selectedPlanId}
-                  onChange={(event) =>
-                    loadPlan(
-                      event.target.value,
-                    )
-                  }
-                >
-                  <MenuItem value="">
-                    <em>
-                      新しい計画書を作成
-                    </em>
+                <MenuItem value="">
+                  <em>新しい計画書を作成</em>
+                </MenuItem>
+                {planList.map((plan) => (
+                  <MenuItem key={plan.id} value={plan.id}>
+                    {formatDateJa(plan.plan_date)}　
+                    {plan.title || '計画書（発注）'}
                   </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
 
-                  {planList.map((plan) => (
-                    <MenuItem
-                      key={plan.id}
-                      value={plan.id}
-                    >
-                      {formatDateJa(
-                        plan.plan_date,
-                      )}
-                      　
-                      {plan.title ||
-                        '計画書（発注）'}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
+            <Button
+              variant="outlined"
+              onClick={() => resetPlanForm(false)}
+              sx={{ minWidth: 160 }}
+            >
+              新しい計画書
+            </Button>
 
-              <Button
-                variant="outlined"
-                onClick={resetPlanForm}
-                sx={{
-                  minWidth: 160,
-                }}
-              >
-                新しい計画書
-              </Button>
-
-              <Button
-                variant="outlined"
-                color="error"
-                onClick={deletePlan}
-                disabled={
-                  !selectedPlanId ||
-                  loading
-                }
-                sx={{
-                  minWidth: 150,
-                }}
-              >
-                計画書を削除
-              </Button>
-            </Stack>
+            <Button
+              variant="outlined"
+              color="error"
+              onClick={deletePlan}
+              disabled={!selectedPlanId || loading || savingAll}
+              sx={{ minWidth: 150 }}
+            >
+              計画書を削除
+            </Button>
           </Stack>
         </Paper>
 
-        {/* ② 計画書基本情報 */}
         <Paper sx={{ p: 2 }}>
           <Stack spacing={2}>
             <Stack
-              direction={{
-                xs: 'column',
-                md: 'row',
-              }}
+              direction={{ xs: 'column', md: 'row' }}
               spacing={2}
-              alignItems={{
-                md: 'center',
-              }}
+              alignItems={{ md: 'center' }}
             >
-              <Box
-                sx={{
-                  minWidth: {
-                    md: 240,
-                  },
-                }}
-              >
-                <Typography
-                  variant="h6"
-                  fontWeight={900}
-                >
+              <Box sx={{ minWidth: { md: 250 } }}>
+                <Typography variant="h6" fontWeight={900}>
                   ② 計画書の基本情報
                 </Typography>
-
-                <Typography
-                  variant="body2"
-                  sx={{
-                    color: 'text.secondary',
-                  }}
-                >
-                  「手配追加」を押した場合も、この内容と画像を同時保存します。
+                <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                  ここでは保存しません。最後の一括保存ボタンで画像も含めて保存します。
                 </Typography>
               </Box>
 
@@ -1228,27 +1076,21 @@ export default function OrderPlans() {
                 type="date"
                 label="計画書日付"
                 value={planDate}
-                onChange={(event) =>
-                  setPlanDate(
-                    event.target.value,
-                  )
-                }
-                InputLabelProps={{
-                  shrink: true,
+                onChange={(event) => {
+                  setPlanDate(event.target.value);
+                  markDirty();
                 }}
-                sx={{
-                  minWidth: 210,
-                }}
+                InputLabelProps={{ shrink: true }}
+                sx={{ minWidth: 210 }}
               />
 
               <TextField
                 label="見出し"
                 value={planTitle}
-                onChange={(event) =>
-                  setPlanTitle(
-                    event.target.value,
-                  )
-                }
+                onChange={(event) => {
+                  setPlanTitle(event.target.value);
+                  markDirty();
+                }}
                 placeholder="例：2026年7月 計画書（発注）"
                 fullWidth
               />
@@ -1257,11 +1099,10 @@ export default function OrderPlans() {
             <TextField
               label="計画書メモ（任意）"
               value={planNote}
-              onChange={(event) =>
-                setPlanNote(
-                  event.target.value,
-                )
-              }
+              onChange={(event) => {
+                setPlanNote(event.target.value);
+                markDirty();
+              }}
               multiline
               minRows={2}
               fullWidth
@@ -1269,73 +1110,42 @@ export default function OrderPlans() {
           </Stack>
         </Paper>
 
-        {/* メインワークスペース */}
         <Box
           sx={{
             display: 'grid',
-
             gridTemplateColumns: {
               xs: '1fr',
-
-              lg:
-                'minmax(420px, 0.95fr) ' +
-                'minmax(560px, 1.05fr)',
+              lg: 'minmax(430px, 0.95fr) minmax(570px, 1.05fr)',
             },
-
             gap: 2,
-
             alignItems: 'start',
           }}
         >
-          {/* 左：計画書画像 */}
           <Paper
             sx={{
               p: 1.5,
-
-              position: {
-                xs: 'static',
-                lg: 'sticky',
-              },
-
-              /**
-               * TopBarの高さに合わせた固定位置です。
-               * 帯の高さを変更している場合は、
-               * 80を90などへ調整してください。
-               */
-              top: {
-                lg: 80,
-              },
-
+              position: { xs: 'static', lg: 'sticky' },
+              top: { lg: 80 },
               zIndex: 2,
             }}
           >
             <Stack spacing={1.25}>
               <Stack
-                direction={{
-                  xs: 'column',
-                  sm: 'row',
-                }}
+                direction={{ xs: 'column', sm: 'row' }}
                 spacing={1}
-                alignItems={{
-                  sm: 'center',
-                }}
+                alignItems={{ sm: 'center' }}
               >
                 <Box sx={{ flex: 1 }}>
                   <Typography fontWeight={900}>
                     計画書を見ながら入力
                   </Typography>
-
                   <Typography
                     variant="caption"
-                    sx={{
-                      color:
-                        'text.secondary',
-                    }}
+                    sx={{ color: 'text.secondary' }}
                   >
-                    左枠内だけをスクロールできるため、右の入力欄を移動しても画像が残ります。
+                    左枠内だけスクロールできます。
                   </Typography>
                 </Box>
-
                 <Chip
                   size="small"
                   variant="outlined"
@@ -1343,62 +1153,41 @@ export default function OrderPlans() {
                 />
               </Stack>
 
-              {/* 画像操作 */}
-              <Stack
-                direction="row"
-                spacing={1}
-                flexWrap="wrap"
-              >
+              <Stack direction="row" spacing={1} flexWrap="wrap">
                 <Button
                   size="small"
                   variant="outlined"
-                  onClick={() =>
-                    zoomImage(-25)
-                  }
+                  onClick={() => zoomImage(-25)}
                 >
                   縮小
                 </Button>
-
                 <Button
                   size="small"
                   variant="outlined"
-                  onClick={() =>
-                    setImageZoom(100)
-                  }
+                  onClick={() => setImageZoom(100)}
                 >
                   全体幅
                 </Button>
-
                 <Button
                   size="small"
                   variant="outlined"
-                  onClick={() =>
-                    zoomImage(25)
-                  }
+                  onClick={() => zoomImage(25)}
                 >
                   拡大
                 </Button>
-
                 <Button
                   size="small"
                   variant="text"
-                  onClick={
-                    scrollImageToTop
-                  }
+                  onClick={scrollImageToTop}
                 >
                   画像の先頭
                 </Button>
-
                 <Button
                   size="small"
                   variant="text"
-                  disabled={
-                    !displayedImageUrl
-                  }
+                  disabled={!displayedImageUrl}
                   onClick={() => {
-                    if (
-                      displayedImageUrl
-                    ) {
+                    if (displayedImageUrl) {
                       window.open(
                         displayedImageUrl,
                         '_blank',
@@ -1411,119 +1200,65 @@ export default function OrderPlans() {
                 </Button>
               </Stack>
 
-              {/* 画像選択・保存 */}
               <Stack
-                direction={{
-                  xs: 'column',
-                  sm: 'row',
-                }}
+                direction={{ xs: 'column', sm: 'row' }}
                 spacing={1}
-                alignItems={{
-                  sm: 'center',
-                }}
+                alignItems={{ sm: 'center' }}
               >
-                <Button
-                  component="label"
-                  variant="outlined"
-                  size="small"
-                >
+                <Button component="label" variant="outlined" size="small">
                   計画書写真を選択・撮影
-
                   <input
                     key={imageInputKey}
                     hidden
                     type="file"
                     accept="image/*"
                     capture="environment"
-                    onChange={(event) =>
-                      setImageFile(
-                        event.target
-                          .files?.[0] ||
-                          null,
-                      )
-                    }
+                    onChange={(event) => {
+                      setImageFile(event.target.files?.[0] || null);
+                      markDirty();
+                    }}
                   />
                 </Button>
 
-                <Button
-                  variant="contained"
-                  size="small"
-                  onClick={
-                    savePlanHeaderAndPhoto
-                  }
-                  disabled={
-                    savingPlan || loading
-                  }
+                <Typography
+                  variant="caption"
+                  sx={{ color: 'text.secondary' }}
                 >
-                  {savingPlan
-                    ? '保存中…'
-                    : '画像・基本情報を保存'}
-                </Button>
+                  {imageFile
+                    ? `選択中：${imageFile.name}`
+                    : currentImagePath
+                      ? '保存済み画像を表示中'
+                      : '画像未選択'}
+                </Typography>
               </Stack>
 
-              <Typography
-                variant="caption"
-                sx={{
-                  color: 'text.secondary',
-                }}
-              >
-                {imageFile
-                  ? `選択中：${imageFile.name}`
-                  : currentImagePath
-                    ? '保存済み画像を表示中'
-                    : '画像未選択'}
-              </Typography>
-
-              {/* 画像ビューア */}
               <Box
                 ref={imageViewportRef}
                 sx={{
                   height: {
                     xs: 520,
                     md: 620,
-
-                    lg:
-                      'calc(100vh - 285px)',
+                    lg: 'calc(100vh - 250px)',
                   },
-
-                  minHeight: {
-                    lg: 520,
-                  },
-
-                  maxHeight: {
-                    lg: 820,
-                  },
-
+                  minHeight: { lg: 520 },
+                  maxHeight: { lg: 850 },
                   overflow: 'auto',
-
                   border: '1px solid',
-
-                  borderColor:
-                    'divider',
-
+                  borderColor: 'divider',
                   borderRadius: 1.5,
-
                   bgcolor: '#e9edf2',
                 }}
               >
                 {displayedImageUrl ? (
                   <Box
                     sx={{
-                      width:
-                        `${imageZoom}%`,
-
-                      mx:
-                        imageZoom <= 100
-                          ? 'auto'
-                          : 0,
-
+                      width: `${imageZoom}%`,
+                      mx: imageZoom <= 100 ? 'auto' : 0,
                       bgcolor: '#fff',
                     }}
                   >
                     <img
-                      src={
-                        displayedImageUrl
-                      }
+                      src={displayedImageUrl}
                       alt="計画書"
                       style={{
                         display: 'block',
@@ -1534,25 +1269,16 @@ export default function OrderPlans() {
                   </Box>
                 ) : (
                   <Stack
-                    sx={{
-                      height: '100%',
-                    }}
+                    sx={{ height: '100%' }}
                     alignItems="center"
                     justifyContent="center"
                     spacing={1}
                   >
-                    <Typography
-                      fontWeight={900}
-                      color="text.secondary"
-                    >
+                    <Typography fontWeight={900} color="text.secondary">
                       計画書画像がありません
                     </Typography>
-
-                    <Typography
-                      variant="body2"
-                      color="text.secondary"
-                    >
-                      上の「計画書写真を選択・撮影」から画像を選択してください。
+                    <Typography variant="body2" color="text.secondary">
+                      上のボタンから画像を選択してください。
                     </Typography>
                   </Stack>
                 )}
@@ -1560,49 +1286,30 @@ export default function OrderPlans() {
             </Stack>
           </Paper>
 
-          {/* 右：保存済み品番＋入力欄 */}
           <Stack spacing={2}>
-            {/* 保存済み品番 */}
             <Paper sx={{ p: 1.5 }}>
               <Stack spacing={1.25}>
                 <Stack
-                  direction={{
-                    xs: 'column',
-                    sm: 'row',
-                  }}
+                  direction={{ xs: 'column', sm: 'row' }}
                   spacing={1}
-                  alignItems={{
-                    sm: 'center',
-                  }}
+                  alignItems={{ sm: 'center' }}
                 >
                   <Box sx={{ flex: 1 }}>
-                    <Typography
-                      variant="h6"
-                      fontWeight={900}
-                    >
-                      登録済み品番
-                      （計画書セット）
+                    <Typography variant="h6" fontWeight={900}>
+                      入力中の品番一覧
                     </Typography>
-
                     <Typography
                       variant="body2"
-                      sx={{
-                        color:
-                          'text.secondary',
-                      }}
+                      sx={{ color: 'text.secondary' }}
                     >
-                      保存後は1行に畳まれるため、次の品番入力を邪魔しません。
+                      ここに追加した段階ではSupabaseへ保存されません。最後にまとめて保存します。
                     </Typography>
                   </Box>
 
                   <Chip
-                    label={
-                      `${items.length}/` +
-                      `${MAX_ITEMS_PER_PLAN}件`
-                    }
+                    label={`${draftItems.length}/${MAX_ITEMS_PER_PLAN}件`}
                     color={
-                      items.length >=
-                      MAX_ITEMS_PER_PLAN
+                      draftItems.length >= MAX_ITEMS_PER_PLAN
                         ? 'warning'
                         : 'primary'
                     }
@@ -1614,840 +1321,595 @@ export default function OrderPlans() {
                     variant="outlined"
                     onClick={beginNextItem}
                     disabled={
-                      items.length >=
-                        MAX_ITEMS_PER_PLAN &&
-                      !isEditingItem
+                      draftItems.length >= MAX_ITEMS_PER_PLAN &&
+                      !isEditingDraft
                     }
                   >
                     次の品番を入力
                   </Button>
                 </Stack>
 
-                {items.length === 0 ? (
+                {draftItems.length === 0 ? (
                   <Alert severity="info">
-                    この計画書には、まだ品番が登録されていません。
+                    右下の入力欄へ1品番目を入力し、「入力中一覧へ追加」を押してください。
                   </Alert>
                 ) : (
                   <Stack spacing={1}>
-                    {items.map(
-                      (item, index) => {
-                        const schedule =
-                          normalizeSchedule(
-                            item.delivery_schedule,
-                          ).filter(
-                            (row) =>
-                              row.date ||
-                              String(
-                                row.qty ?? '',
-                              ).trim(),
-                          );
+                    {draftItems.map((item, index) => {
+                      const schedule = normalizeSchedule(
+                        item.deliverySchedule,
+                      ).filter(
+                        (row) =>
+                          row.date || String(row.qty ?? '').trim(),
+                      );
 
-                        const expanded =
-                          expandedItemId ===
-                          item.id;
+                      const expanded =
+                        expandedItemKey === item.clientKey;
+                      const editing =
+                        itemForm.editingKey === item.clientKey;
 
-                        const editing =
-                          itemForm.itemId ===
-                          item.id;
+                      return (
+                        <Paper
+                          key={item.clientKey}
+                          variant="outlined"
+                          sx={{
+                            p: 1.25,
+                            borderColor: editing
+                              ? 'warning.main'
+                              : 'divider',
+                            bgcolor: editing
+                              ? 'rgba(255, 167, 38, 0.06)'
+                              : 'background.paper',
+                          }}
+                        >
+                          <Stack spacing={1}>
+                            <Stack
+                              direction={{
+                                xs: 'column',
+                                md: 'row',
+                              }}
+                              spacing={1}
+                              alignItems={{ md: 'center' }}
+                            >
+                              <Chip
+                                size="small"
+                                label={`品番 ${index + 1}`}
+                                variant="outlined"
+                              />
 
-                        return (
-                          <Paper
-                            key={item.id}
-                            variant="outlined"
-                            sx={{
-                              p: 1.25,
-
-                              borderColor:
-                                editing
-                                  ? 'warning.main'
-                                  : 'divider',
-
-                              bgcolor:
-                                editing
-                                  ? 'rgba(255, 167, 38, 0.06)'
-                                  : 'background.paper',
-                            }}
-                          >
-                            <Stack spacing={1}>
-                              <Stack
-                                direction={{
-                                  xs: 'column',
-                                  md: 'row',
-                                }}
-                                spacing={1}
-                                alignItems={{
-                                  md: 'center',
-                                }}
-                              >
+                              {item.itemId ? (
                                 <Chip
                                   size="small"
                                   label={
-                                    `品番 ` +
-                                    `${index + 1}`
+                                    item.dirty
+                                      ? '修正あり'
+                                      : '保存済み'
+                                  }
+                                  color={
+                                    item.dirty ? 'warning' : 'success'
                                   }
                                   variant="outlined"
                                 />
+                              ) : (
+                                <Chip
+                                  size="small"
+                                  label="新規・未保存"
+                                  color="warning"
+                                  variant="outlined"
+                                />
+                              )}
 
-                                <Box
-                                  sx={{
-                                    flex: 1,
-                                    minWidth: 0,
-                                  }}
+                              <Box sx={{ flex: 1, minWidth: 0 }}>
+                                <Typography fontWeight={900} noWrap>
+                                  {item.productCode || '-'}　
+                                  {item.productName || '-'}
+                                </Typography>
+                                <Typography
+                                  variant="caption"
+                                  sx={{ color: 'text.secondary' }}
                                 >
-                                  <Typography
-                                    fontWeight={
-                                      900
-                                    }
-                                    noWrap
-                                  >
-                                    {item
-                                      .product
-                                      ?.product_code ||
-                                      '-'}
-                                    　
-                                    {item
-                                      .product
-                                      ?.name ||
-                                      '-'}
-                                  </Typography>
+                                  {productTypeLabel(item.productType)} / 印刷手配数：
+                                  {parseNonNegativeInteger(item.printOrderQty).toLocaleString('ja-JP')}冊 /{' '}
+                                  {factoryLabel(
+                                    item.deliveryFactory,
+                                  ) || '工場未設定'}{' '}
+                                  / 注文番号：
+                                  {item.kawasakiOrderNo || '未設定'} /
+                                  納品予定：{schedule.length}件・合計
+                                  {scheduleTotal(
+                                    item.deliverySchedule,
+                                  )}
+                                  冊
+                                </Typography>
+                              </Box>
 
+                              <Button
+                                size="small"
+                                variant="text"
+                                onClick={() =>
+                                  setExpandedItemKey((previous) =>
+                                    previous === item.clientKey
+                                      ? ''
+                                      : item.clientKey,
+                                  )
+                                }
+                              >
+                                {expanded ? '詳細を閉じる' : '詳細'}
+                              </Button>
+
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                onClick={() => editDraft(item)}
+                              >
+                                修正
+                              </Button>
+
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                color="error"
+                                onClick={() => removeDraft(item)}
+                              >
+                                削除
+                              </Button>
+                            </Stack>
+
+                            {expanded && (
+                              <Box
+                                sx={{
+                                  p: 1,
+                                  borderRadius: 1,
+                                  bgcolor: 'background.default',
+                                }}
+                              >
+                                <Typography variant="body2" sx={{ mb: 0.75 }}>
+                                  <b>印刷手配数：</b>
+                                  {parseNonNegativeInteger(item.printOrderQty).toLocaleString('ja-JP')}冊
+                                </Typography>
+
+                                {item.memo && (
                                   <Typography
-                                    variant="caption"
+                                    variant="body2"
+                                    sx={{ mb: 0.75 }}
+                                  >
+                                    <b>メモ：</b>
+                                    {item.memo}
+                                  </Typography>
+                                )}
+
+                                {schedule.length === 0 ? (
+                                  <Typography variant="body2">
+                                    納品予定は未設定です。
+                                  </Typography>
+                                ) : (
+                                  <Box
                                     sx={{
-                                      color:
-                                        'text.secondary',
+                                      display: 'grid',
+                                      gridTemplateColumns:
+                                        'repeat(2, minmax(0, 1fr))',
+                                      gap: 0.75,
                                     }}
                                   >
-                                    {productTypeLabel(
-                                      item
-                                        .product
-                                        ?.product_type,
+                                    {schedule.map(
+                                      (row, scheduleIndex) => (
+                                        <Typography
+                                          key={row.id}
+                                          variant="body2"
+                                          sx={{
+                                            p: 0.75,
+                                            border: '1px solid',
+                                            borderColor: 'divider',
+                                            borderRadius: 1,
+                                          }}
+                                        >
+                                          {scheduleIndex + 1}.{' '}
+                                          {formatDateJa(row.date) ||
+                                            '日付未設定'}{' '}
+                                          / {row.qty || 0}冊
+                                        </Typography>
+                                      ),
                                     )}
-                                    {' / '}
-
-                                    {factoryLabel(
-                                      item.delivery_factory,
-                                    ) ||
-                                      '工場未設定'}
-
-                                    {' / '}
-
-                                    注文番号：
-                                    {item.kawasaki_order_no ||
-                                      '未設定'}
-
-                                    {' / '}
-
-                                    納品予定：
-                                    {schedule.length}
-                                    件・合計
-                                    {scheduleTotal(
-                                      item.delivery_schedule,
-                                    )}
-                                    冊
-                                  </Typography>
-                                </Box>
-
-                                <Button
-                                  size="small"
-                                  variant="text"
-                                  onClick={() =>
-                                    setExpandedItemId(
-                                      (
-                                        previous,
-                                      ) =>
-                                        previous ===
-                                        item.id
-                                          ? ''
-                                          : item.id,
-                                    )
-                                  }
-                                >
-                                  {expanded
-                                    ? '詳細を閉じる'
-                                    : '詳細'}
-                                </Button>
-
-                                <Button
-                                  size="small"
-                                  variant="outlined"
-                                  onClick={() =>
-                                    editItem(item)
-                                  }
-                                >
-                                  修正
-                                </Button>
-
-                                <Button
-                                  size="small"
-                                  variant="outlined"
-                                  color="error"
-                                  onClick={() =>
-                                    deleteItem(item)
-                                  }
-                                >
-                                  削除
-                                </Button>
-                              </Stack>
-
-                              {/* 必要な時だけ納品予定を展開 */}
-                              {expanded && (
-                                <Box
-                                  sx={{
-                                    p: 1,
-
-                                    borderRadius:
-                                      1,
-
-                                    bgcolor:
-                                      'background.default',
-                                  }}
-                                >
-                                  {item.memo && (
-                                    <Typography
-                                      variant="body2"
-                                      sx={{
-                                        mb: 0.75,
-                                      }}
-                                    >
-                                      <b>
-                                        メモ：
-                                      </b>
-                                      {item.memo}
-                                    </Typography>
-                                  )}
-
-                                  {schedule.length ===
-                                  0 ? (
-                                    <Typography variant="body2">
-                                      納品予定は未設定です。
-                                    </Typography>
-                                  ) : (
-                                    <Box
-                                      sx={{
-                                        display:
-                                          'grid',
-
-                                        gridTemplateColumns:
-                                          'repeat(2, minmax(0, 1fr))',
-
-                                        gap: 0.75,
-                                      }}
-                                    >
-                                      {schedule.map(
-                                        (
-                                          row,
-                                          scheduleIndex,
-                                        ) => (
-                                          <Typography
-                                            key={
-                                              row.id
-                                            }
-                                            variant="body2"
-                                            sx={{
-                                              p: 0.75,
-
-                                              border:
-                                                '1px solid',
-
-                                              borderColor:
-                                                'divider',
-
-                                              borderRadius:
-                                                1,
-                                            }}
-                                          >
-                                            {scheduleIndex +
-                                              1}
-                                            .{' '}
-
-                                            {formatDateJa(
-                                              row.date,
-                                            ) ||
-                                              '日付未設定'}
-
-                                            {' / '}
-
-                                            {row.qty ||
-                                              0}
-                                            冊
-                                          </Typography>
-                                        ),
-                                      )}
-                                    </Box>
-                                  )}
-                                </Box>
-                              )}
-                            </Stack>
-                          </Paper>
-                        );
-                      },
-                    )}
+                                  </Box>
+                                )}
+                              </Box>
+                            )}
+                          </Stack>
+                        </Paper>
+                      );
+                    })}
                   </Stack>
                 )}
               </Stack>
             </Paper>
 
-            {/* 品番入力欄 */}
-            <Paper
-              ref={editorRef}
-              sx={{
-                p: 2,
-                scrollMarginTop: 90,
-              }}
-            >
+            <Paper ref={editorRef} sx={{ p: 2, scrollMarginTop: 90 }}>
               <Stack spacing={2}>
                 <Stack
-                  direction={{
-                    xs: 'column',
-                    md: 'row',
-                  }}
+                  direction={{ xs: 'column', md: 'row' }}
                   spacing={1}
-                  alignItems={{
-                    md: 'center',
-                  }}
+                  alignItems={{ md: 'center' }}
                 >
                   <Box sx={{ flex: 1 }}>
-                    <Typography
-                      variant="h6"
-                      fontWeight={900}
-                    >
+                    <Typography variant="h6" fontWeight={900}>
                       ③ 品番・納品情報を入力
                     </Typography>
-
                     <Typography
                       variant="body2"
-                      sx={{
-                        color:
-                          'text.secondary',
-                      }}
+                      sx={{ color: 'text.secondary' }}
                     >
-                      保存すると入力欄は空になり、同じ計画書を見ながら次の品番を続けて登録できます。
+                      「入力中一覧へ追加」は画面内の仮登録です。DB保存は最後の1回だけです。
                     </Typography>
                   </Box>
 
-                  {isEditingItem ? (
-                    <Chip
-                      label="既存明細を修正中"
-                      color="warning"
-                      variant="outlined"
-                    />
-                  ) : (
-                    <Chip
-                      label="新規明細"
-                      color="primary"
-                      variant="outlined"
-                    />
-                  )}
+                  <Chip
+                    label={
+                      isEditingDraft ? '一覧明細を修正中' : '新規明細'
+                    }
+                    color={isEditingDraft ? 'warning' : 'primary'}
+                    variant="outlined"
+                  />
 
-                  <Button
-                    variant="text"
-                    onClick={beginNextItem}
-                  >
+                  <Button variant="text" onClick={beginNextItem}>
                     入力をクリア
                   </Button>
                 </Stack>
 
-                {!canAddNewItem && (
+                {!canAddAnotherDraft && (
                   <Alert severity="warning">
-                    この計画書には最大
-                    {MAX_ITEMS_PER_PLAN}
-                    品番が登録されています。既存品番を修正するか、新しい計画書を作成してください。
+                    最大{MAX_ITEMS_PER_PLAN}
+                    品番に達しています。既存明細を修正するか、いずれかを削除してください。
                   </Alert>
                 )}
 
-                {/* 品番・種類・商品名 */}
                 <Box
                   sx={{
                     display: 'grid',
-
                     gridTemplateColumns: {
                       xs: '1fr',
-
-                      md:
-                        '1.15fr ' +
-                        '0.85fr ' +
-                        '1.15fr',
+                      md: '1.15fr 0.85fr 1.15fr',
                     },
-
                     gap: 1.5,
                   }}
                 >
                   <TextField
-                    inputRef={
-                      productCodeInputRef
-                    }
+                    inputRef={productCodeInputRef}
                     label="品番【必須】"
-                    value={
-                      itemForm.productCode
-                    }
-                    onChange={(event) =>
-                      setItemForm(
-                        (previous) => ({
-                          ...previous,
-
-                          productCode:
-                            event.target
-                              .value,
-                        }),
-                      )
-                    }
+                    value={itemForm.productCode}
+                    onChange={(event) => {
+                      setItemForm((previous) => ({
+                        ...previous,
+                        productCode: event.target.value,
+                      }));
+                      markDirty();
+                    }}
                     placeholder="例：99817-0001"
-                    disabled={
-                      !canAddNewItem
-                    }
+                    disabled={!canAddAnotherDraft}
                   />
 
-                  <FormControl
-                    disabled={
-                      !canAddNewItem
-                    }
-                  >
+                  <FormControl disabled={!canAddAnotherDraft}>
                     <InputLabel id="plan-product-type-label">
                       商品種類【必須】
                     </InputLabel>
-
                     <Select
                       labelId="plan-product-type-label"
                       label="商品種類【必須】"
-                      value={
-                        itemForm.productType
-                      }
-                      onChange={(event) =>
-                        setItemForm(
-                          (previous) => ({
-                            ...previous,
-
-                            productType:
-                              event.target
-                                .value,
-                          }),
-                        )
-                      }
+                      value={itemForm.productType}
+                      onChange={(event) => {
+                        setItemForm((previous) => ({
+                          ...previous,
+                          productType: event.target.value,
+                        }));
+                        markDirty();
+                      }}
                     >
-                      {PRODUCT_TYPE_OPTIONS.map(
-                        (option) => (
-                          <MenuItem
-                            key={
-                              option.value
-                            }
-                            value={
-                              option.value
-                            }
-                          >
-                            {option.label}
-                          </MenuItem>
-                        ),
-                      )}
+                      {PRODUCT_TYPE_OPTIONS.map((option) => (
+                        <MenuItem
+                          key={option.value}
+                          value={option.value}
+                        >
+                          {option.label}
+                        </MenuItem>
+                      ))}
                     </Select>
                   </FormControl>
 
                   <TextField
                     label="商品名【必須】"
-                    value={
-                      itemForm.productName
-                    }
-                    onChange={(event) =>
-                      setItemForm(
-                        (previous) => ({
-                          ...previous,
-
-                          productName:
-                            event.target
-                              .value,
-                        }),
-                      )
-                    }
+                    value={itemForm.productName}
+                    onChange={(event) => {
+                      setItemForm((previous) => ({
+                        ...previous,
+                        productName: event.target.value,
+                      }));
+                      markDirty();
+                    }}
                     placeholder="例：ZR900A / ZRT10G"
-                    disabled={
-                      !canAddNewItem
-                    }
+                    disabled={!canAddAnotherDraft}
                   />
                 </Box>
 
+                <TextField
+                  label="印刷手配数【必須】"
+                  value={itemForm.printOrderQty}
+                  onChange={(event) => {
+                    setItemForm((previous) => ({
+                      ...previous,
+                      printOrderQty: event.target.value,
+                    }));
+                    markDirty();
+                  }}
+                  placeholder="例：500"
+                  helperText="この数量を見積画面の数量初期値と、在庫管理（納品完了）の基準在庫数へ自動反映します。"
+                  inputProps={{ inputMode: 'numeric' }}
+                  disabled={!canAddAnotherDraft}
+                  fullWidth
+                />
+
                 <Divider />
 
-                {/* 工場・注文番号 */}
                 <Box
                   sx={{
                     display: 'grid',
-
                     gridTemplateColumns: {
                       xs: '1fr',
                       md: '220px 1fr',
                     },
-
                     gap: 1.5,
                   }}
                 >
-                  <FormControl
-                    disabled={
-                      !canAddNewItem
-                    }
-                  >
+                  <FormControl disabled={!canAddAnotherDraft}>
                     <InputLabel id="plan-factory-label">
                       納品工場
                     </InputLabel>
-
                     <Select
                       labelId="plan-factory-label"
                       label="納品工場"
-                      value={
-                        itemForm.deliveryFactory
-                      }
-                      onChange={(event) =>
-                        setItemForm(
-                          (previous) => ({
-                            ...previous,
-
-                            deliveryFactory:
-                              event.target
-                                .value,
-                          }),
-                        )
-                      }
+                      value={itemForm.deliveryFactory}
+                      onChange={(event) => {
+                        setItemForm((previous) => ({
+                          ...previous,
+                          deliveryFactory: event.target.value,
+                        }));
+                        markDirty();
+                      }}
                     >
                       <MenuItem value="">
                         <em>未設定</em>
                       </MenuItem>
-
-                      {DELIVERY_FACTORY_OPTIONS.map(
-                        (option) => (
-                          <MenuItem
-                            key={
-                              option.value
-                            }
-                            value={
-                              option.value
-                            }
-                          >
-                            {option.label}
-                          </MenuItem>
-                        ),
-                      )}
+                      {DELIVERY_FACTORY_OPTIONS.map((option) => (
+                        <MenuItem
+                          key={option.value}
+                          value={option.value}
+                        >
+                          {option.label}
+                        </MenuItem>
+                      ))}
                     </Select>
                   </FormControl>
 
                   <TextField
                     label="川崎重工 注文番号"
-                    value={
-                      itemForm.kawasakiOrderNo
-                    }
-                    onChange={(event) =>
-                      setItemForm(
-                        (previous) => ({
-                          ...previous,
-
-                          kawasakiOrderNo:
-                            event.target
-                              .value,
-                        }),
-                      )
-                    }
+                    value={itemForm.kawasakiOrderNo}
+                    onChange={(event) => {
+                      setItemForm((previous) => ({
+                        ...previous,
+                        kawasakiOrderNo: event.target.value,
+                      }));
+                      markDirty();
+                    }}
                     placeholder="例：KJ0001"
-                    disabled={
-                      !canAddNewItem
-                    }
+                    disabled={!canAddAnotherDraft}
                   />
                 </Box>
 
                 <TextField
                   label="明細メモ（任意）"
                   value={itemForm.memo}
-                  onChange={(event) =>
-                    setItemForm(
-                      (previous) => ({
-                        ...previous,
-
-                        memo:
-                          event.target
-                            .value,
-                      }),
-                    )
-                  }
+                  onChange={(event) => {
+                    setItemForm((previous) => ({
+                      ...previous,
+                      memo: event.target.value,
+                    }));
+                    markDirty();
+                  }}
                   multiline
                   minRows={2}
                   fullWidth
-                  disabled={
-                    !canAddNewItem
-                  }
+                  disabled={!canAddAnotherDraft}
                 />
 
                 <Divider />
 
-                {/* 納品予定見出し */}
                 <Stack
-                  direction={{
-                    xs: 'column',
-                    md: 'row',
-                  }}
+                  direction={{ xs: 'column', md: 'row' }}
                   spacing={1}
-                  alignItems={{
-                    md: 'center',
-                  }}
+                  alignItems={{ md: 'center' }}
                 >
                   <Box sx={{ flex: 1 }}>
-                    <Typography
-                      fontWeight={900}
-                    >
-                      納品予定
-                      （追加数は無制限）
+                    <Typography fontWeight={900}>
+                      納品予定（追加数は無制限）
                     </Typography>
-
                     <Typography
                       variant="body2"
-                      sx={{
-                        color:
-                          'text.secondary',
-                      }}
+                      sx={{ color: 'text.secondary' }}
                     >
-                      10件前後入力してもページ全体が長くならないよう、この枠内だけスクロールします。
+                      この枠内だけスクロールします。
                     </Typography>
                   </Box>
 
                   <Chip
                     size="small"
-                    label={
-                      `入力中 ` +
-                      `${cleanDeliveryRows.length}` +
-                      `件`
-                    }
+                    label={`入力中 ${cleanDeliveryRows.length}件`}
                     variant="outlined"
                   />
 
                   <Button
                     variant="outlined"
-                    onClick={
-                      addDeliveryRow
-                    }
-                    disabled={
-                      !canAddNewItem
-                    }
+                    onClick={addDeliveryRow}
+                    disabled={!canAddAnotherDraft}
                   >
                     納品予定を追加
                   </Button>
                 </Stack>
 
-                {/* 納品予定だけを内部スクロール */}
                 <Box
                   sx={{
                     maxHeight: 430,
-
                     overflowY: 'auto',
-
                     pr: 0.5,
-
                     border: '1px solid',
-
-                    borderColor:
-                      'divider',
-
+                    borderColor: 'divider',
                     borderRadius: 1.5,
-
                     p: 1,
-
-                    bgcolor:
-                      'background.default',
+                    bgcolor: 'background.default',
                   }}
                 >
                   <Stack spacing={1}>
-                    {deliveryRows.map(
-                      (row, index) => (
-                        <Paper
-                          key={row.id}
-                          variant="outlined"
-                          sx={{ p: 1 }}
+                    {deliveryRows.map((row, index) => (
+                      <Paper
+                        key={row.id}
+                        variant="outlined"
+                        sx={{ p: 1 }}
+                      >
+                        <Box
+                          sx={{
+                            display: 'grid',
+                            gridTemplateColumns: {
+                              xs: '1fr',
+                              sm: '52px minmax(180px, 1fr) minmax(150px, 0.75fr) 76px',
+                            },
+                            gap: 1,
+                            alignItems: 'center',
+                          }}
                         >
-                          <Box
-                            sx={{
-                              display:
-                                'grid',
-
-                              gridTemplateColumns:
-                                {
-                                  xs: '1fr',
-
-                                  sm:
-                                    '52px ' +
-                                    'minmax(180px, 1fr) ' +
-                                    'minmax(150px, 0.75fr) ' +
-                                    '76px',
-                                },
-
-                              gap: 1,
-
-                              alignItems:
-                                'center',
-                            }}
+                          <Typography
+                            variant="body2"
+                            fontWeight={900}
+                            sx={{ textAlign: { sm: 'center' } }}
                           >
-                            <Typography
-                              variant="body2"
-                              fontWeight={900}
-                              sx={{
-                                textAlign: {
-                                  sm: 'center',
-                                },
-                              }}
-                            >
-                              {index + 1}
-                            </Typography>
+                            {index + 1}
+                          </Typography>
 
-                            <TextField
-                              type="date"
-                              label={
-                                `納品日 ` +
-                                `${index + 1}`
-                              }
-                              value={row.date}
-                              onChange={(
-                                event,
-                              ) =>
-                                updateDeliveryRow(
-                                  row.id,
-                                  {
-                                    date:
-                                      event
-                                        .target
-                                        .value,
-                                  },
-                                )
-                              }
-                              InputLabelProps={{
-                                shrink: true,
-                              }}
-                              size="small"
-                              disabled={
-                                !canAddNewItem
-                              }
-                            />
+                          <TextField
+                            type="date"
+                            label={`納品日 ${index + 1}`}
+                            value={row.date}
+                            onChange={(event) =>
+                              updateDeliveryRow(row.id, {
+                                date: event.target.value,
+                              })
+                            }
+                            InputLabelProps={{ shrink: true }}
+                            size="small"
+                            disabled={!canAddAnotherDraft}
+                          />
 
-                            <TextField
-                              label={
-                                `納品数量 ` +
-                                `${index + 1}`
-                              }
-                              value={row.qty}
-                              onChange={(
-                                event,
-                              ) =>
-                                updateDeliveryRow(
-                                  row.id,
-                                  {
-                                    qty:
-                                      event
-                                        .target
-                                        .value,
-                                  },
-                                )
-                              }
-                              placeholder="例：100"
-                              size="small"
-                              disabled={
-                                !canAddNewItem
-                              }
-                            />
+                          <TextField
+                            label={`納品数量 ${index + 1}`}
+                            value={row.qty}
+                            onChange={(event) =>
+                              updateDeliveryRow(row.id, {
+                                qty: event.target.value,
+                              })
+                            }
+                            placeholder="例：100"
+                            size="small"
+                            disabled={!canAddAnotherDraft}
+                          />
 
-                            <Button
-                              size="small"
-                              variant="outlined"
-                              color="error"
-                              onClick={() =>
-                                removeDeliveryRow(
-                                  row.id,
-                                )
-                              }
-                              disabled={
-                                !canAddNewItem
-                              }
-                            >
-                              削除
-                            </Button>
-                          </Box>
-                        </Paper>
-                      ),
-                    )}
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            color="error"
+                            onClick={() => removeDeliveryRow(row.id)}
+                            disabled={!canAddAnotherDraft}
+                          >
+                            削除
+                          </Button>
+                        </Box>
+                      </Paper>
+                    ))}
 
                     <Button
                       variant="outlined"
-                      onClick={
-                        addDeliveryRow
-                      }
-                      disabled={
-                        !canAddNewItem
-                      }
+                      onClick={addDeliveryRow}
+                      disabled={!canAddAnotherDraft}
                     >
                       ＋ 納品予定をもう1件追加
                     </Button>
                   </Stack>
                 </Box>
 
-                {/* 保存ボタン */}
-                <Box
+                <Stack
+                  direction={{ xs: 'column', sm: 'row' }}
+                  spacing={1}
+                  alignItems={{ sm: 'center' }}
+                >
+                  <Button
+                    variant="outlined"
+                    onClick={addOrUpdateDraft}
+                    disabled={!canAddAnotherDraft}
+                  >
+                    {isEditingDraft
+                      ? '入力中一覧の明細を更新'
+                      : '入力中一覧へ追加して次の品番へ'}
+                  </Button>
+
+                  <Typography
+                    variant="body2"
+                    sx={{ color: 'text.secondary' }}
+                  >
+                    これは仮追加です。Supabase保存は下の水色ボタン1回だけです。
+                  </Typography>
+                </Stack>
+              </Stack>
+            </Paper>
+
+            <Paper
+              sx={{
+                p: 2,
+                position: 'sticky',
+                bottom: 12,
+                zIndex: 3,
+                border: '1px solid',
+                borderColor: dirty ? 'warning.main' : 'primary.main',
+                boxShadow: 6,
+              }}
+            >
+              <Stack
+                direction={{ xs: 'column', md: 'row' }}
+                spacing={1.5}
+                alignItems={{ md: 'center' }}
+              >
+                <Button
+                  variant="contained"
+                  size="large"
+                  onClick={saveWholePlan}
+                  disabled={savingAll || loading}
                   sx={{
-                    position: 'sticky',
-                    bottom: 0,
-                    zIndex: 1,
-
-                    bgcolor:
-                      'background.paper',
-
-                    borderTop:
-                      '1px solid',
-
-                    borderColor:
-                      'divider',
-
-                    pt: 1.5,
-                    mt: 0.5,
+                    minWidth: 280,
+                    py: 1.4,
+                    fontWeight: 900,
                   }}
                 >
-                  <Stack
-                    direction={{
-                      xs: 'column',
-                      sm: 'row',
-                    }}
-                    spacing={1}
-                    alignItems={{
-                      sm: 'center',
-                    }}
+                  {savingAll
+                    ? '一括保存中…'
+                    : '①〜③を計画書セットとしてまとめて保存'}
+                </Button>
+
+                <Box sx={{ flex: 1 }}>
+                  <Typography fontWeight={900}>
+                    保存対象：画像・基本情報・品番明細
+                    {draftItems.length}件
+                    {hasEditorContent ? '＋現在入力中の1件' : ''}
+                  </Typography>
+                  <Typography
+                    variant="body2"
+                    sx={{ color: 'text.secondary' }}
                   >
-                    <Button
-                      variant="contained"
-                      onClick={saveItem}
-                      disabled={
-                        savingItem ||
-                        loading ||
-                        !canAddNewItem
-                      }
-                    >
-                      {savingItem
-                        ? '保存中…'
-                        : isEditingItem
-                          ? '手配明細を更新して次へ'
-                          : '手配追加して次の品番へ'}
-                    </Button>
-
-                    {isEditingItem && (
-                      <Button
-                        variant="outlined"
-                        onClick={
-                          beginNextItem
-                        }
-                      >
-                        修正をやめて新規入力
-                      </Button>
-                    )}
-
-                    <Typography
-                      variant="body2"
-                      sx={{
-                        color:
-                          'text.secondary',
-                      }}
-                    >
-                      このボタンで、計画書画像・基本情報・現在の品番明細を同じセットへ保存します。
-                    </Typography>
-                  </Stack>
+                    現在の入力欄に完成した品番が残っている場合は、その1件も自動で含めます。
+                  </Typography>
                 </Box>
               </Stack>
             </Paper>
@@ -2455,20 +1917,12 @@ export default function OrderPlans() {
             {selectedPlan && (
               <Typography
                 variant="caption"
-                sx={{
-                  color: 'text.secondary',
-                }}
+                sx={{ color: 'text.secondary' }}
               >
-                選択中セット：
-                {formatDateJa(
-                  selectedPlan.plan_date,
-                )}
-                {' / '}
+                選択中セット：{formatDateJa(selectedPlan.plan_date)} /
                 更新日時：
                 {selectedPlan.updated_at
-                  ? new Date(
-                      selectedPlan.updated_at,
-                    ).toLocaleString(
+                  ? new Date(selectedPlan.updated_at).toLocaleString(
                       'ja-JP',
                     )
                   : '-'}

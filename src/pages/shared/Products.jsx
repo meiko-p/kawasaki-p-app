@@ -82,7 +82,7 @@ export default function Products() {
       const { data, error: fetchError } = await supabase
         .from('products')
         .select(
-          'id, product_code, name, product_type, unit_price, lot_unit_price, active, plan_registered, updated_at',
+          'id, product_code, name, product_type, unit_price, price_quantity, active, plan_registered, updated_at',
         )
         .eq('active', true)
         .eq('plan_registered', true)
@@ -99,7 +99,7 @@ export default function Products() {
             row.id,
             {
               unitPrice: row.unit_price ?? '',
-              lotUnitPrice: row.lot_unit_price ?? '',
+              quantity: row.price_quantity ?? '',
             },
           ]),
         ),
@@ -141,10 +141,10 @@ export default function Products() {
             String(draft.unitPrice ?? '').trim() === ''
               ? null
               : safeNumber(draft.unitPrice),
-          lot_unit_price:
-            String(draft.lotUnitPrice ?? '').trim() === ''
+          price_quantity:
+            String(draft.quantity ?? '').trim() === ''
               ? null
-              : safeNumber(draft.lotUnitPrice),
+              : Math.max(0, Math.round(safeNumber(draft.quantity))),
         })
         .eq('id', row.id);
 
@@ -175,10 +175,10 @@ export default function Products() {
               String(draft.unitPrice ?? '').trim() === ''
                 ? null
                 : safeNumber(draft.unitPrice),
-            lot_unit_price:
-              String(draft.lotUnitPrice ?? '').trim() === ''
+            price_quantity:
+              String(draft.quantity ?? '').trim() === ''
                 ? null
-                : safeNumber(draft.lotUnitPrice),
+                : Math.max(0, Math.round(safeNumber(draft.quantity))),
           })
           .eq('id', row.id);
 
@@ -230,7 +230,7 @@ export default function Products() {
         heightLeft -= pdfHeight - margin * 2;
       }
 
-      downloadBlob(pdf.output('blob'), 'planned_product_unit_prices.pdf');
+      downloadBlob(pdf.output('blob'), 'planned_product_prices_and_quantities.pdf');
     } catch (pdfError) {
       // eslint-disable-next-line no-console
       console.error(pdfError);
@@ -245,7 +245,7 @@ export default function Products() {
       <Stack spacing={2}>
         <Box>
           <Typography variant="h4" fontWeight={900}>
-            単価登録【ロット単価・商品別単価】
+            単価登録【数量・商品別単価】
           </Typography>
           <Typography variant="body2" sx={{ mt: 0.5, color: 'text.secondary' }}>
             計画書（発注）に登録済みの品番だけを表示します。
@@ -293,7 +293,7 @@ export default function Products() {
                   <TableCell>商品種類</TableCell>
                   <TableCell>商品名</TableCell>
                   <TableCell>商品別単価</TableCell>
-                  <TableCell>ロット単価</TableCell>
+                  <TableCell>数量</TableCell>
                   <TableCell align="right">操作</TableCell>
                 </TableRow>
               </TableHead>
@@ -320,11 +320,11 @@ export default function Products() {
                       <TableCell sx={{ minWidth: 200 }}>
                         <TextField
                           size="small"
-                          value={draft.lotUnitPrice ?? ''}
+                          value={draft.quantity ?? ''}
                           onChange={(event) =>
-                            updateDraft(row.id, { lotUnitPrice: event.target.value })
+                            updateDraft(row.id, { quantity: event.target.value })
                           }
-                          placeholder="例：24,100"
+                          placeholder="例：500"
                           fullWidth
                           InputProps={{ readOnly: !isStaff }}
                         />
@@ -374,7 +374,7 @@ export default function Products() {
             }}
           >
             <Typography variant="h5" fontWeight={900}>
-              計画書登録済み商品 単価一覧
+              計画書登録済み商品 単価・数量一覧
             </Typography>
             <Typography variant="body2" sx={{ mt: 0.5 }}>
               出力日時：{new Date().toLocaleString('ja-JP')}
@@ -386,7 +386,7 @@ export default function Products() {
             >
               <thead>
                 <tr>
-                  {['品番', '商品種類', '商品名', '商品別単価', 'ロット単価'].map((label) => (
+                  {['品番', '商品種類', '商品名', '商品別単価', '数量'].map((label) => (
                     <th
                       key={label}
                       style={{ border: '1px solid #333', padding: 7, background: '#eee' }}
@@ -410,7 +410,7 @@ export default function Products() {
                         {yen(safeNumber(draft.unitPrice))}
                       </td>
                       <td style={{ border: '1px solid #333', padding: 7, textAlign: 'right' }}>
-                        {yen(safeNumber(draft.lotUnitPrice))}
+                        {Math.max(0, Math.round(safeNumber(draft.quantity))).toLocaleString('ja-JP')}冊
                       </td>
                     </tr>
                   );

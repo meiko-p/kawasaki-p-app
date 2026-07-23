@@ -11,72 +11,66 @@ import {
   Typography,
 } from '@mui/material';
 
-const SHARED_CARDS = [
-  {
+const SHARED_CARDS = {
+  orderPlans: {
     title: '計画書（発注）【スタート】',
     description:
-      '計画書写真、品番、商品種類、商品名、納品工場、注文番号、納品予定を登録します。すべての業務の起点です。',
+      '計画書写真、品番、印刷手配数、納品工場、注文番号、納品予定を登録します。見積数量と在庫管理の起点です。',
     path: '/order-plans',
     start: true,
   },
-  {
+  packages: {
     title: '梱包登録',
     description:
       '計画書登録済み品番だけを対象に、納入荷姿申請書・写真・梱包サイズ・ロットを登録します。',
     path: '/packages',
   },
-  {
-    title: '見積＆納品数【確定提出分】',
+  prices: {
+    title: '単価登録【数量・商品別単価】',
     description:
-      '確定した見積数量と納品数を川崎重工側と共有・確認します。',
-    path: '/plans',
-  },
-  {
-    title: '単価登録【ロット単価・商品別単価】',
-    description:
-      '計画書登録済み品番の単価を一覧で登録・更新します。',
+      '計画書登録済み品番について、数量と商品別単価を一覧で登録・更新します。',
     path: '/products',
   },
-  {
+  search: {
     title: '商品番号検索',
     description:
       '計画書登録済みの商品番号から、計画・見積・梱包・ラベル・在庫・単価へ移動します。',
     path: '/search',
   },
-];
+};
 
-const STAFF_CARDS = [
-  {
+const STAFF_CARDS = {
+  estimates: {
     title: '見積作成',
     description:
-      '計画書（発注）に登録済みの品番を検索し、見積計算・PDF出力を行います。',
+      '計画書（発注）の印刷手配数を数量初期値として引き継ぎ、見積計算・PDF出力を行います。',
     path: '/estimates',
   },
-  {
+  dempyo: {
     title: '社内伝票（PDF）',
     description:
-      '手順票・工程表・売上伝票・得意先元帳を作成します。入庫確定もここで行います。',
+      '手順票・工程表・売上伝票・得意先元帳を作成します。',
     path: '/dempyo',
   },
-  {
+  labels: {
     title: 'ラベル【田中さん共有】',
     description:
       '計画書登録済み品番の納品予定・ロット・包数を整理し、PDF出力します。',
     path: '/labels',
   },
-  {
-    title: '在庫管理',
+  inventory: {
+    title: '在庫管理（納品完了）',
     description:
-      '見積総数から納品計画を差し引き、在庫数・棚番号・完了状態を管理します。',
+      '計画書の印刷手配数から、納品済みにした日別数量を差し引き、現在在庫と完了状態を管理します。',
     path: '/inventory',
   },
-  {
+  binding: {
     title: '製本スケジュール（3カ月）',
     description:
       '納品日を自動反映し、マットPP・無線綴じ・2回折りの日程を3カ月同時表示で管理します。',
     path: '/binding-schedule',
   },
-];
+};
 
 function DashboardCard({ card, onOpen }) {
   return (
@@ -125,8 +119,23 @@ export default function Dashboard() {
 
   const isStaff = role === 'staff' || role === 'admin';
   const cards = isStaff
-    ? [SHARED_CARDS[0], STAFF_CARDS[0], STAFF_CARDS[1], SHARED_CARDS[1], STAFF_CARDS[2], STAFF_CARDS[3], SHARED_CARDS[2], SHARED_CARDS[3], SHARED_CARDS[4], STAFF_CARDS[4]]
-    : SHARED_CARDS;
+    ? [
+        SHARED_CARDS.orderPlans,
+        STAFF_CARDS.estimates,
+        STAFF_CARDS.dempyo,
+        SHARED_CARDS.packages,
+        STAFF_CARDS.labels,
+        STAFF_CARDS.inventory,
+        SHARED_CARDS.prices,
+        SHARED_CARDS.search,
+        STAFF_CARDS.binding,
+      ]
+    : [
+        SHARED_CARDS.orderPlans,
+        SHARED_CARDS.packages,
+        SHARED_CARDS.prices,
+        SHARED_CARDS.search,
+      ];
 
   return (
     <Box sx={{ p: 2 }}>
@@ -147,9 +156,10 @@ export default function Dashboard() {
           bgcolor: 'rgba(77, 208, 225, 0.045)',
         }}
       >
-        <Typography fontWeight={900}>新しい業務の流れ</Typography>
+        <Typography fontWeight={900}>現在の業務フロー</Typography>
         <Typography variant="body2" sx={{ mt: 0.5, color: 'text.secondary' }}>
-          ① 計画書（発注）で品番・納品情報を登録 → ② 見積 → ③ 社内伝票・梱包・ラベル・在庫・単価 → ④ 製本スケジュールへ自動連携
+          ① 計画書（発注）で品番・印刷手配数・納品予定を登録 → ② 見積へ数量を自動反映 →
+          ③ 納品日ごとに「納品済」を登録 → ④ 在庫管理（納品完了）で残数を確認
         </Typography>
       </Paper>
 

@@ -162,6 +162,7 @@ export default function Estimates() {
                 id,
                 order_plan_id,
                 product_id,
+                print_order_qty,
                 delivery_factory,
                 kawasaki_order_no,
                 delivery_schedule,
@@ -190,6 +191,7 @@ export default function Estimates() {
                 client_id,
                 product_id,
                 order_plan_item_id,
+                print_order_qty,
                 delivery_factory,
                 kawasaki_order_no,
                 delivery_schedule,
@@ -286,6 +288,7 @@ export default function Estimates() {
           product_id: selectedProduct.id,
           order_plan_item_id: planItem.id,
           title: selectedProduct.product_code,
+          print_order_qty: Math.max(0, Number(planItem.print_order_qty || 0)),
           delivery_factory: planItem.delivery_factory || null,
           kawasaki_order_no: planItem.kawasaki_order_no || null,
           delivery_schedule: normalizeSchedule(planItem.delivery_schedule),
@@ -299,6 +302,7 @@ export default function Estimates() {
             client_id,
             product_id,
             order_plan_item_id,
+            print_order_qty,
             delivery_factory,
             kawasaki_order_no,
             delivery_schedule,
@@ -362,6 +366,8 @@ export default function Estimates() {
     return {
       ...selectedEstimate,
       product: selectedEstimate.product || selectedProduct,
+      print_order_qty:
+        Number(planItem?.print_order_qty || selectedEstimate.print_order_qty || 0) || 0,
       delivery_factory: planItem?.delivery_factory || selectedEstimate.delivery_factory || null,
       kawasaki_order_no: planItem?.kawasaki_order_no || selectedEstimate.kawasaki_order_no || null,
       delivery_schedule:
@@ -542,7 +548,7 @@ export default function Estimates() {
                 <Box
                   sx={{
                     display: 'grid',
-                    gridTemplateColumns: { xs: '1fr', md: 'repeat(4, 1fr)' },
+                    gridTemplateColumns: { xs: '1fr', md: 'repeat(5, 1fr)' },
                     gap: 1.5,
                   }}
                 >
@@ -568,6 +574,15 @@ export default function Estimates() {
                     </Typography>
                     <Typography fontWeight={800}>
                       {planItem.kawasaki_order_no || '-'}
+                    </Typography>
+                  </Paper>
+
+                  <Paper variant="outlined" sx={{ p: 1.5 }}>
+                    <Typography variant="caption" color="text.secondary">
+                      印刷手配数
+                    </Typography>
+                    <Typography fontWeight={900} color="primary.light">
+                      {Math.max(0, Number(planItem.print_order_qty || 0)).toLocaleString('ja-JP')}冊
                     </Typography>
                   </Paper>
 
@@ -693,11 +708,16 @@ export default function Estimates() {
               <EstimateForm
                 key={selectedEstimate.id}
                 estimateId={selectedEstimate.id}
+                initialQuantity={
+                  Number(planItem?.print_order_qty || selectedEstimate?.print_order_qty || 0) || 0
+                }
                 onDetailsLoaded={(details) => setSelectedEstimateDetails(details || [])}
                 meta={{
                   deliveryFactory: planItem?.delivery_factory || '',
                   deliveryFactoryLabel: factoryLabel(planItem?.delivery_factory),
                   kawasakiOrderNo: planItem?.kawasaki_order_no || '',
+                  printOrderQty:
+                    Number(planItem?.print_order_qty || selectedEstimate?.print_order_qty || 0) || 0,
                   deliverySchedule: schedule,
                 }}
               />
