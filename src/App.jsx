@@ -22,6 +22,7 @@ import Dempyo from './pages/internal/Dempyo.jsx';
 import Inventory from './pages/internal/Inventory.jsx';
 import Labels from './pages/internal/Labels.jsx';
 import BindingSchedule from './pages/internal/BindingSchedule.jsx';
+import PrintOrderChecklist from './pages/internal/PrintOrderChecklist.jsx';
 
 export default function App() {
   return (
@@ -46,6 +47,7 @@ export default function App() {
           <Route element={<RequireRole allowedRoles={['staff', 'admin']} />}>
             <Route path="/estimates" element={<Estimates />} />
             <Route path="/dempyo" element={<Dempyo />} />
+            <Route path="/print-order-checklist" element={<PrintOrderChecklist />} />
             <Route path="/inventory" element={<Inventory />} />
             <Route path="/labels" element={<Labels />} />
             <Route path="/binding-schedule" element={<BindingSchedule />} />

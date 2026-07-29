@@ -19,6 +19,7 @@ import AssignmentRoundedIcon from '@mui/icons-material/AssignmentRounded';
 import CalculateRoundedIcon from '@mui/icons-material/CalculateRounded';
 import DescriptionRoundedIcon from '@mui/icons-material/DescriptionRounded';
 import Inventory2RoundedIcon from '@mui/icons-material/Inventory2Rounded';
+import FactCheckRoundedIcon from '@mui/icons-material/FactCheckRounded';
 import LabelRoundedIcon from '@mui/icons-material/LabelRounded';
 import WarehouseRoundedIcon from '@mui/icons-material/WarehouseRounded';
 import PriceChangeRoundedIcon from '@mui/icons-material/PriceChangeRounded';
@@ -58,6 +59,12 @@ const MENU_ITEMS = [
     path: '/packages',
     icon: <Inventory2RoundedIcon />,
     shared: true,
+  },
+  {
+    label: '印刷手配チェックリスト',
+    path: '/print-order-checklist',
+    icon: <FactCheckRoundedIcon />,
+    staffOnly: true,
   },
   {
     label: 'ラベル【田中さん共有】',
@@ -149,9 +156,10 @@ export default function SideNav({ open, onClose }) {
                 border: item.emphasis
                   ? '1px solid rgba(77, 208, 225, 0.38)'
                   : '1px solid transparent',
-                bgcolor: item.emphasis && !selected
-                  ? 'rgba(77, 208, 225, 0.04)'
-                  : undefined,
+                bgcolor:
+                  item.emphasis && !selected
+                    ? 'rgba(77, 208, 225, 0.04)'
+                    : undefined,
                 '&.Mui-selected': {
                   bgcolor: 'rgba(77, 208, 225, 0.13)',
                   color: 'primary.light',
@@ -164,7 +172,10 @@ export default function SideNav({ open, onClose }) {
               <ListItemIcon
                 sx={{
                   minWidth: 42,
-                  color: selected || item.emphasis ? 'primary.light' : 'text.secondary',
+                  color:
+                    selected || item.emphasis
+                      ? 'primary.light'
+                      : 'text.secondary',
                 }}
               >
                 {item.icon}
@@ -186,7 +197,7 @@ export default function SideNav({ open, onClose }) {
       <Divider />
       <Box sx={{ p: 2 }}>
         <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-          計画書の印刷手配数を起点に、見積数量と納品完了後の在庫数を連動します。
+          計画書の印刷手配数・納品予定を起点に、見積、印刷手配チェック、納品完了、在庫残数を連動します。
         </Typography>
       </Box>
     </Drawer>
