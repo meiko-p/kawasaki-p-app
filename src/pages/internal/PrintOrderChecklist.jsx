@@ -8,6 +8,7 @@ import {
   Checkbox,
   Chip,
   CircularProgress,
+  Collapse,
   Divider,
   FormControl,
   FormControlLabel,
@@ -28,6 +29,10 @@ import FactoryRoundedIcon from '@mui/icons-material/FactoryRounded';
 import PublicRoundedIcon from '@mui/icons-material/PublicRounded';
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
 import RestartAltRoundedIcon from '@mui/icons-material/RestartAltRounded';
+import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded';
+import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
+import ExpandLessRoundedIcon from '@mui/icons-material/ExpandLessRounded';
+import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded';
 
 const PRODUCT_TYPE_LABELS = {
   ENGINE: '小型エンジン',
@@ -337,6 +342,32 @@ function scheduleTotal(schedule) {
   return (schedule || []).reduce((sum, row) => sum + safeInteger(row.qty), 0);
 }
 
+function completedDateKey(row) {
+  const value = row?.checklist?.completed_at;
+  if (!value) return 'date-unknown';
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'date-unknown';
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function completedDateLabel(key) {
+  if (!key || key === 'date-unknown') return '日付不明';
+  const [year, month, day] = key.split('-');
+  return `${year}/${month}/${day}`;
+}
+
+function completedTimeLabel(value) {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '-';
+  return date.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+}
+
 export default function PrintOrderChecklist() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -345,6 +376,8 @@ export default function PrintOrderChecklist() {
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [selectedCompletedId, setSelectedCompletedId] = useState('');
+  const [expandedCompletedDate, setExpandedCompletedDate] = useState('');
 
   const setSaving = (itemId, saving) => {
     setSavingIds((previous) => {
@@ -603,6 +636,76 @@ export default function PrintOrderChecklist() {
     return result;
   }, [rows]);
 
+
+  const completedRows = useMemo(
+    () => filteredRows.filter((row) => row.checklist.is_completed),
+    [filteredRows],
+  );
+
+  const activeRows = useMemo(
+    () => filteredRows.filter((row) => !row.checklist.is_completed),
+    [filteredRows],
+  );
+
+  const completedGroups = useMemo(() => {
+    const groupMap = new Map();
+
+    for (const row of completedRows) {
+      const key = completedDateKey(row);
+      if (!groupMap.has(key)) groupMap.set(key, []);
+      groupMap.get(key).push(row);
+    }
+
+    return [...groupMap.entries()]
+      .map(([key, groupRows]) => ({
+        key,
+        label: completedDateLabel(key),
+        rows: [...groupRows].sort((left, right) =>
+          String(right.checklist.completed_at || '').localeCompare(
+            String(left.checklist.completed_at || ''),
+          ),
+        ),
+      }))
+      .sort((left, right) => right.key.localeCompare(left.key));
+  }, [completedRows]);
+
+  const selectedCompletedRow = useMemo(
+    () => completedRows.find((row) => row.id === selectedCompletedId) || null,
+    [completedRows, selectedCompletedId],
+  );
+
+  useEffect(() => {
+    if (completedGroups.length === 0) {
+      if (expandedCompletedDate) setExpandedCompletedDate('');
+      return;
+    }
+
+    const stillExists = completedGroups.some(
+      (group) => group.key === expandedCompletedDate,
+    );
+    if (!stillExists) setExpandedCompletedDate(completedGroups[0].key);
+  }, [completedGroups, expandedCompletedDate]);
+
+  const displayRows = useMemo(() => {
+    if (!selectedCompletedRow) return activeRows;
+    return [...activeRows, selectedCompletedRow];
+  }, [activeRows, selectedCompletedRow]);
+
+  useEffect(() => {
+    if (selectedCompletedId && !completedRows.some((row) => row.id === selectedCompletedId)) {
+      setSelectedCompletedId('');
+    }
+  }, [completedRows, selectedCompletedId]);
+
+  const showCompletedRow = (row) => {
+    setSelectedCompletedId(row.id);
+    window.setTimeout(() => {
+      document
+        .getElementById(`print-check-row-${row.id}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
+  };
+
   const persistChecklist = async (
     row,
     nextChecklist,
@@ -733,6 +836,7 @@ export default function PrintOrderChecklist() {
       { ...row.checklist, is_completed: true },
       `${row.product?.product_code || ''} を手配済にしました`,
     );
+    setSelectedCompletedId('');
   };
 
   const releaseCompleted = async (row) => {
@@ -754,6 +858,7 @@ export default function PrintOrderChecklist() {
       },
       `${row.product?.product_code || ''} の手配済を解除しました`,
     );
+    setSelectedCompletedId('');
   };
 
   return (
@@ -859,8 +964,143 @@ export default function PrintOrderChecklist() {
         )}
 
         {!loading && (
-          <Stack spacing={1.5}>
-            {filteredRows.map((row) => {
+          <Box
+            sx={{
+              display: 'grid',
+              gridTemplateColumns: { xs: '1fr', lg: '300px minmax(0, 1fr)' },
+              gap: 2,
+              alignItems: 'start',
+            }}
+          >
+            <Paper
+              variant="outlined"
+              sx={{
+                p: 1.5,
+                position: { lg: 'sticky' },
+                top: { lg: 88 },
+                maxHeight: { lg: 'calc(100vh - 110px)' },
+                overflowY: { lg: 'auto' },
+                borderColor: 'success.dark',
+                bgcolor: 'rgba(46, 125, 50, 0.035)',
+              }}
+            >
+              <Stack spacing={1.25}>
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <HistoryRoundedIcon color="success" />
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Typography fontWeight={1000}>手配済履歴</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      完了日と件数を縮小表示。品番を押すと右側へ再表示します。
+                    </Typography>
+                  </Box>
+                  <Chip
+                    size="small"
+                    color="success"
+                    variant="outlined"
+                    label={`${completedRows.length}件`}
+                  />
+                </Stack>
+
+                <Divider />
+
+                {completedGroups.length === 0 ? (
+                  <Typography variant="body2" color="text.secondary">
+                    条件に一致する手配済データはありません。
+                  </Typography>
+                ) : (
+                  completedGroups.map((group) => {
+                    const expanded = expandedCompletedDate === group.key;
+
+                    return (
+                      <Paper
+                        key={group.key}
+                        variant="outlined"
+                        sx={{ overflow: 'hidden', bgcolor: 'background.paper' }}
+                      >
+                        <Button
+                          fullWidth
+                          color="inherit"
+                          onClick={() =>
+                            setExpandedCompletedDate((previous) =>
+                              previous === group.key ? '' : group.key,
+                            )
+                          }
+                          endIcon={expanded ? <ExpandLessRoundedIcon /> : <ExpandMoreRoundedIcon />}
+                          sx={{
+                            px: 1.2,
+                            py: 1,
+                            justifyContent: 'space-between',
+                            textAlign: 'left',
+                          }}
+                        >
+                          <Box sx={{ textAlign: 'left' }}>
+                            <Typography variant="body2" fontWeight={900}>
+                              {group.label}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              印刷手配完了 {group.rows.length}件
+                            </Typography>
+                          </Box>
+                        </Button>
+
+                        <Collapse in={expanded} timeout="auto" unmountOnExit>
+                          <Divider />
+                          <Stack spacing={0.7} sx={{ p: 0.8 }}>
+                            {group.rows.map((completedRow) => {
+                              const selected = completedRow.id === selectedCompletedId;
+                              return (
+                                <Box
+                                  key={completedRow.id}
+                                  sx={{
+                                    p: 0.8,
+                                    border: '1px solid',
+                                    borderColor: selected ? 'primary.main' : 'divider',
+                                    borderRadius: 1.5,
+                                    bgcolor: selected
+                                      ? 'rgba(77, 208, 225, 0.06)'
+                                      : 'transparent',
+                                  }}
+                                >
+                                  <Typography variant="body2" fontWeight={900} noWrap>
+                                    {completedRow.product?.product_code || '-'}
+                                  </Typography>
+                                  <Typography variant="caption" color="text.secondary" display="block" noWrap>
+                                    {completedRow.product?.name || '-'}
+                                  </Typography>
+                                  <Typography variant="caption" color="success.light" display="block">
+                                    {completedTimeLabel(completedRow.checklist.completed_at)} /{' '}
+                                    {safeInteger(completedRow.print_order_qty).toLocaleString('ja-JP')}冊
+                                  </Typography>
+                                  <Button
+                                    size="small"
+                                    fullWidth
+                                    variant={selected ? 'contained' : 'outlined'}
+                                    startIcon={<VisibilityRoundedIcon />}
+                                    onClick={() => showCompletedRow(completedRow)}
+                                    sx={{ mt: 0.6 }}
+                                  >
+                                    {selected ? '表示中' : '再表示'}
+                                  </Button>
+                                </Box>
+                              );
+                            })}
+                          </Stack>
+                        </Collapse>
+                      </Paper>
+                    );
+                  })
+                )}
+              </Stack>
+            </Paper>
+
+            <Stack spacing={1.5}>
+              {displayRows.length === 0 && completedRows.length > 0 && (
+                <Alert severity="success">
+                  現在表示する未完了データはありません。左側の「手配済履歴」から品番を選ぶと、詳細を再表示して手配済解除できます。
+                </Alert>
+              )}
+
+              {displayRows.map((row) => {
               const checklist = row.checklist;
               const progress = progressInfo(checklist);
               const status = checklistStatus(checklist);
@@ -872,12 +1112,15 @@ export default function PrintOrderChecklist() {
 
               return (
                 <Paper
+                  id={`print-check-row-${row.id}`}
                   key={row.id}
                   sx={{
                     p: 2,
                     border: '1px solid',
-                    borderColor: checklist.is_completed
-                      ? 'success.main'
+                    borderColor: row.id === selectedCompletedId
+                      ? 'primary.main'
+                      : checklist.is_completed
+                        ? 'success.main'
                       : progress.ready
                         ? 'info.main'
                         : 'divider',
@@ -1234,8 +1477,9 @@ export default function PrintOrderChecklist() {
                   </Stack>
                 </Paper>
               );
-            })}
-          </Stack>
+              })}
+            </Stack>
+          </Box>
         )}
       </Stack>
     </Box>

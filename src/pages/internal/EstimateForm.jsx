@@ -3,6 +3,7 @@ import { supabase } from '../../supabaseClient.jsx';
 
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Checkbox,
@@ -24,7 +25,18 @@ import {
   Typography,
 } from '@mui/material';
 
-function getImpositionSize(size) {
+const COVER_BINDING_METHOD = 'マットPP加工＆無線綴じ（巻取り）';
+const BODY_BINDING_METHOD = '無線綴じ';
+
+const BINDING_PROFIT_OPTIONS = Array.from({ length: 10 }, (_, index) =>
+  (1.1 + index * 0.1).toFixed(1),
+);
+
+/**
+ * 用紙必要数だけは従来通りの面付数を使用します。
+ * A6も用紙計算上は64面付のままです。
+ */
+function getPaperImpositionSize(size) {
   switch (size) {
     case 'A3':
       return 8;
@@ -40,6 +52,20 @@ function getImpositionSize(size) {
     default:
       return 16;
   }
+}
+
+/**
+ * 製版・印刷台数の計算に使う1台あたりページ数。
+ * A6は2丁製本のため32P基準、それ以外は従来通りです。
+ */
+function getProductionPagesPerForm(size) {
+  if (size === 'A6') return 32;
+  return getPaperImpositionSize(size);
+}
+
+function getProductionPageDiv(pages, size) {
+  const pageCount = Math.max(0, Math.round(toNumberLoose(pages)));
+  return Math.max(1, Math.ceil(pageCount / getProductionPagesPerForm(size)));
 }
 
 function normalizeNumericString(value) {
@@ -79,6 +105,11 @@ function toRateLoose(value, fallback = 1) {
   return raw.includes('%') || raw.includes('％') ? number / 100 : number;
 }
 
+function clampBindingProfitRate(value) {
+  const rate = toRateLoose(value, 1.1);
+  return Math.min(2, Math.max(1.1, rate));
+}
+
 function nonNegativeInteger(value) {
   return Math.max(0, Math.round(toNumberLoose(value)));
 }
@@ -102,6 +133,9 @@ function createInitialDetail(initialQuantity = 0) {
     colors: '4',
     is_double_sided: true,
     binding_method: '',
+    binding_profit_rate: '1.1',
+    binding_auto_calculated: false,
+    shipping_auto_calculated: false,
 
     design_type: 'inhouse',
     design_outsource_cost: '0',
@@ -123,11 +157,139 @@ function createInitialDetail(initialQuantity = 0) {
   };
 }
 
+function getBindingTarget(detail) {
+  const eligibleSize = detail.size === 'A5' || detail.size === 'A6';
+  if (!eligibleSize) return '';
+
+  if (
+    detail.detail_type === '表紙' &&
+    String(detail.binding_method || '').trim() === COVER_BINDING_METHOD
+  ) {
+    return 'COVER';
+  }
+
+  if (
+    detail.detail_type === '本文' &&
+    String(detail.binding_method || '').trim() === BODY_BINDING_METHOD
+  ) {
+    return 'BODY';
+  }
+
+  return '';
+}
+
+function getRecommendedBindingMethods(detail) {
+  if (!(detail.size === 'A5' || detail.size === 'A6')) return [];
+  if (detail.detail_type === '表紙') return [COVER_BINDING_METHOD];
+  if (detail.detail_type === '本文') return [BODY_BINDING_METHOD];
+  return [];
+}
+
+function coverBindingUnitPrice(size, quantity) {
+  const qty = nonNegativeInteger(quantity);
+
+  if (size === 'A5') {
+    if (qty <= 2000) return 19;
+    if (qty <= 5000) return 18;
+    if (qty <= 10000) return 16;
+    return 15;
+  }
+
+  if (size === 'A6') {
+    if (qty <= 5000) return 16;
+    if (qty <= 10000) return 15;
+    return 14;
+  }
+
+  return 0;
+}
+
+function bodyBindingUnitPrice(size, quantity) {
+  const qty = nonNegativeInteger(quantity);
+
+  if (size === 'A5') {
+    if (qty <= 2000) return 2.5;
+    if (qty <= 5000) return 2.0;
+    if (qty <= 10000) return 1.6;
+    return 1.4;
+  }
+
+  if (size === 'A6') {
+    if (qty <= 500) return 3.5;
+    if (qty <= 2000) return 2.5;
+    if (qty <= 5000) return 2.0;
+    if (qty <= 10000) return 1.6;
+    return 1.4;
+  }
+
+  return 0;
+}
+
+function coverShippingPrice(quantity) {
+  const qty = nonNegativeInteger(quantity);
+  if (qty <= 0) return 0;
+  if (qty <= 1000) return 4400;
+  if (qty <= 5000) return 8800;
+  if (qty <= 10000) return 13200;
+  return 17000;
+}
+
+function calculateAutoFinishing(detail) {
+  const target = getBindingTarget(detail);
+  const quantity = nonNegativeInteger(detail.quantity);
+  const pages = nonNegativeInteger(detail.pages);
+  const profitRate = clampBindingProfitRate(detail.binding_profit_rate);
+
+  if (target === 'COVER') {
+    const unitPrice = coverBindingUnitPrice(detail.size, quantity);
+    const bindingCost = Math.round(quantity * unitPrice * profitRate);
+
+    return {
+      target,
+      eligible: true,
+      unitPrice,
+      pageUnits: 1,
+      profitRate,
+      bindingCost,
+      shippingCost: coverShippingPrice(quantity),
+      formula: `${quantity.toLocaleString('ja-JP')}冊 × ${unitPrice}円 × 利益${profitRate.toFixed(1)}`,
+    };
+  }
+
+  if (target === 'BODY') {
+    const pageUnits = Math.max(1, Math.ceil(pages / 16));
+    const unitPrice = bodyBindingUnitPrice(detail.size, quantity);
+    const bindingCost = Math.round(pageUnits * unitPrice * quantity * profitRate);
+
+    return {
+      target,
+      eligible: true,
+      unitPrice,
+      pageUnits,
+      profitRate,
+      bindingCost,
+      shippingCost: 0,
+      formula: `ceil(${pages}P ÷ 16) = ${pageUnits} × ${unitPrice}円 × ${quantity.toLocaleString('ja-JP')}冊 × 利益${profitRate.toFixed(1)}`,
+    };
+  }
+
+  return {
+    target: '',
+    eligible: false,
+    unitPrice: 0,
+    pageUnits: 0,
+    profitRate,
+    bindingCost: 0,
+    shippingCost: 0,
+    formula: '',
+  };
+}
+
 function calcNeededPaper(detail) {
   const quantity = nonNegativeInteger(detail.quantity);
   const pages = nonNegativeInteger(detail.pages);
   const colors = Math.max(0, toNumberLoose(detail.colors));
-  const imposition = getImpositionSize(detail.size);
+  const imposition = getPaperImpositionSize(detail.size);
   const sideFactor = detail.is_double_sided ? 2 : 1;
   const pageDiv = Math.max(1, Math.ceil(pages / imposition));
   const base = Math.ceil((quantity * pages) / imposition);
@@ -155,10 +317,7 @@ function calcPlateCost(detail) {
 
   const colors = Math.max(0, toNumberLoose(detail.colors));
   const sideFactor = detail.is_double_sided ? 2 : 1;
-  const pageDiv = Math.max(
-    1,
-    Math.ceil(nonNegativeInteger(detail.pages) / getImpositionSize(detail.size)),
-  );
+  const pageDiv = getProductionPageDiv(detail.pages, detail.size);
 
   return colors * sideFactor * Math.max(0, toNumberLoose(detail.plate_unit_cost)) * pageDiv;
 }
@@ -169,15 +328,15 @@ function calcPrintCost(detail) {
   const printUnit = Math.max(0, toNumberLoose(detail.print_unit_cost));
   const quantity = nonNegativeInteger(detail.quantity);
   const pages = nonNegativeInteger(detail.pages);
-  const imposition = getImpositionSize(detail.size);
-  const pageDiv = Math.max(1, Math.ceil(pages / imposition));
 
   if (detail.machine === 'オンデマンド') {
+    const imposition = getPaperImpositionSize(detail.size);
     const baseCount = Math.ceil((quantity * pages) / imposition);
     return printUnit * baseCount * 4;
   }
 
   if (detail.machine === 'VP' || detail.machine === 'GTO') {
+    const pageDiv = getProductionPageDiv(pages, detail.size);
     return colors * sideFactor * printUnit * pageDiv;
   }
 
@@ -200,11 +359,14 @@ function calcDesignCost(detail) {
 
 function calculateDetail(detail) {
   const designCost = calcDesignCost(detail);
+  const bindingCost = Math.max(0, toNumberLoose(detail.binding_cost));
+  const shippingCost = Math.max(0, toNumberLoose(detail.shipping_cost));
 
   if (detail.print_type === 'outsourced') {
     const printCost =
       Math.max(0, toNumberLoose(detail.print_outsource_cost)) *
       Math.max(0, toRateLoose(detail.print_profit_rate, 1));
+    const printTotalCost = printCost + bindingCost + shippingCost;
 
     return {
       designCost,
@@ -212,10 +374,15 @@ function calculateDetail(detail) {
       paperCost: 0,
       plateCost: 0,
       printCost,
-      bindingCost: 0,
-      shippingCost: 0,
-      printTotalCost: printCost,
-      totalEstimatedCost: designCost + printCost,
+      bindingCost,
+      shippingCost,
+      printTotalCost,
+      totalEstimatedCost: designCost + printTotalCost,
+      productionPageDiv: getProductionPageDiv(detail.pages, detail.size),
+      printRunQuantity:
+        detail.size === 'A6'
+          ? Math.ceil(nonNegativeInteger(detail.quantity) / 2)
+          : nonNegativeInteger(detail.quantity),
     };
   }
 
@@ -227,8 +394,6 @@ function calculateDetail(detail) {
   });
   const plateCost = calcPlateCost(detail);
   const printCost = calcPrintCost(detail);
-  const bindingCost = Math.max(0, toNumberLoose(detail.binding_cost));
-  const shippingCost = Math.max(0, toNumberLoose(detail.shipping_cost));
   const printTotalCost =
     paperCost + plateCost + printCost + bindingCost + shippingCost;
 
@@ -242,6 +407,11 @@ function calculateDetail(detail) {
     shippingCost,
     printTotalCost,
     totalEstimatedCost: designCost + printTotalCost,
+    productionPageDiv: getProductionPageDiv(detail.pages, detail.size),
+    printRunQuantity:
+      detail.size === 'A6'
+        ? Math.ceil(nonNegativeInteger(detail.quantity) / 2)
+        : nonNegativeInteger(detail.quantity),
   };
 }
 
@@ -255,6 +425,9 @@ function detailToForm(detail, initialQuantity) {
     colors: String(detail.colors ?? fallback.colors),
     is_double_sided: Boolean(detail.is_double_sided),
     binding_method: detail.binding_method ?? '',
+    binding_profit_rate: String(detail.binding_profit_rate ?? '1.1'),
+    binding_auto_calculated: Boolean(detail.binding_auto_calculated),
+    shipping_auto_calculated: Boolean(detail.shipping_auto_calculated),
 
     design_type: detail.design_type || 'inhouse',
     design_outsource_cost: String(detail.design_outsource_cost ?? '0'),
@@ -332,14 +505,140 @@ export default function EstimateForm({
     }));
   }, [editingDetailId, initialQuantity, quantityManuallyEdited]);
 
+  const autoFinishing = useMemo(
+    () => calculateAutoFinishing(newDetail),
+    [
+      newDetail.binding_method,
+      newDetail.binding_profit_rate,
+      newDetail.detail_type,
+      newDetail.pages,
+      newDetail.quantity,
+      newDetail.size,
+    ],
+  );
+
+  useEffect(() => {
+    setNewDetail((previous) => {
+      let changed = false;
+      const next = { ...previous };
+
+      if (previous.binding_auto_calculated) {
+        const nextBinding = String(
+          Math.round(autoFinishing.eligible ? autoFinishing.bindingCost : 0),
+        );
+        if (next.binding_cost !== nextBinding) {
+          next.binding_cost = nextBinding;
+          changed = true;
+        }
+      }
+
+      if (previous.shipping_auto_calculated) {
+        const nextShipping = String(
+          Math.round(autoFinishing.target === 'COVER' ? autoFinishing.shippingCost : 0),
+        );
+        if (next.shipping_cost !== nextShipping) {
+          next.shipping_cost = nextShipping;
+          changed = true;
+        }
+      }
+
+      return changed ? next : previous;
+    });
+  }, [autoFinishing]);
+
   const preview = useMemo(() => calculateDetail(newDetail), [newDetail]);
+  const recommendedBindingMethods = useMemo(
+    () => getRecommendedBindingMethods(newDetail),
+    [newDetail.detail_type, newDetail.size],
+  );
 
   const handleChange = (event) => {
     const { name, type, checked, value } = event.target;
+
     if (name === 'quantity') setQuantityManuallyEdited(true);
+
+    setNewDetail((previous) => {
+      const next = {
+        ...previous,
+        [name]: type === 'checkbox' ? checked : value,
+      };
+
+      if (name === 'binding_cost') next.binding_auto_calculated = false;
+      if (name === 'shipping_cost') next.shipping_auto_calculated = false;
+
+      if (name === 'detail_type' || name === 'size') {
+        const target = getBindingTarget(next);
+        if (!target) {
+          if (previous.binding_auto_calculated) next.binding_cost = '0';
+          if (previous.shipping_auto_calculated) next.shipping_cost = '0';
+          next.binding_auto_calculated = false;
+          next.shipping_auto_calculated = false;
+        } else {
+          next.binding_auto_calculated = true;
+          next.shipping_auto_calculated = target === 'COVER';
+        }
+      }
+
+      return next;
+    });
+  };
+
+  const changeBindingMethod = (value) => {
+    const method = String(value || '');
+
+    setNewDetail((previous) => {
+      const next = { ...previous, binding_method: method };
+      const target = getBindingTarget(next);
+
+      if (target) {
+        next.binding_auto_calculated = true;
+        next.shipping_auto_calculated = target === 'COVER';
+      } else {
+        if (previous.binding_auto_calculated) next.binding_cost = '0';
+        if (previous.shipping_auto_calculated) next.shipping_cost = '0';
+        next.binding_auto_calculated = false;
+        next.shipping_auto_calculated = false;
+      }
+
+      return next;
+    });
+  };
+
+  const changeBindingProfitRate = (value) => {
     setNewDetail((previous) => ({
       ...previous,
-      [name]: type === 'checkbox' ? checked : value,
+      binding_profit_rate: String(value ?? ''),
+    }));
+  };
+
+  const enableBindingAutoCalculation = () => {
+    if (!autoFinishing.eligible) {
+      setError('A5/A6で、表紙または本文に対応した製本方法を選択してください');
+      return;
+    }
+
+    setNewDetail((previous) => ({
+      ...previous,
+      binding_auto_calculated: true,
+      shipping_auto_calculated: autoFinishing.target === 'COVER',
+      binding_cost: String(Math.round(autoFinishing.bindingCost)),
+      shipping_cost:
+        autoFinishing.target === 'COVER'
+          ? String(Math.round(autoFinishing.shippingCost))
+          : previous.shipping_cost,
+    }));
+  };
+
+  const enableShippingAutoCalculation = () => {
+    if (autoFinishing.target !== 'COVER') {
+      setError('発送費の自動計算は、A5/A6の表紙で「マットPP加工＆無線綴じ（巻取り）」を選択した場合のみ使用できます');
+      return;
+    }
+
+    setNewDetail((previous) => ({
+      ...previous,
+      shipping_auto_calculated: true,
+      shipping_cost: String(Math.round(autoFinishing.shippingCost)),
     }));
   };
 
@@ -412,6 +711,9 @@ export default function EstimateForm({
         colors: String(newDetail.colors || ''),
         is_double_sided: Boolean(newDetail.is_double_sided),
         binding_method: String(newDetail.binding_method || '').trim(),
+        binding_profit_rate: clampBindingProfitRate(newDetail.binding_profit_rate),
+        binding_auto_calculated: Boolean(newDetail.binding_auto_calculated),
+        shipping_auto_calculated: Boolean(newDetail.shipping_auto_calculated),
 
         design_type: newDetail.design_type,
         design_outsource_cost: Math.max(0, toNumberLoose(newDetail.design_outsource_cost)),
@@ -476,7 +778,7 @@ export default function EstimateForm({
           見積明細（計算・追加）
         </Typography>
         <Typography variant="body2" color="text.secondary">
-          計画書の印刷手配数を数量の初期値として表示します。必要に応じて手動修正できます。
+          計画書の印刷手配数を数量の初期値として表示します。A6の製版・印刷は2丁製本として32P基準で台数計算します。
         </Typography>
       </Box>
 
@@ -508,11 +810,11 @@ export default function EstimateForm({
           明細一覧（「詳細を見る・修正」で入力内容を復元）
         </Typography>
         <Box sx={{ overflowX: 'auto' }}>
-          <Table size="small" sx={{ minWidth: 1100 }}>
+          <Table size="small" sx={{ minWidth: 1420 }}>
             <TableHead>
               <TableRow>
                 <TableCell>詳細</TableCell>
-                <TableCell>サイズ</TableCell>
+                <TableCell>サイズ・製本</TableCell>
                 <TableCell align="right">数量</TableCell>
                 <TableCell align="right">P</TableCell>
                 <TableCell align="right">色</TableCell>
@@ -520,6 +822,8 @@ export default function EstimateForm({
                 <TableCell align="right">用紙代</TableCell>
                 <TableCell align="right">製版代</TableCell>
                 <TableCell align="right">印刷代</TableCell>
+                <TableCell align="right">製本代</TableCell>
+                <TableCell align="right">発送費</TableCell>
                 <TableCell align="right">小計</TableCell>
                 <TableCell align="right">操作</TableCell>
               </TableRow>
@@ -531,6 +835,7 @@ export default function EstimateForm({
                   <TableCell>
                     {detail.size || '-'}
                     {detail.binding_method ? ` / ${detail.binding_method}` : ''}
+                    {detail.binding_auto_calculated ? '（自動）' : ''}
                   </TableCell>
                   <TableCell align="right">{Number(detail.quantity || 0).toLocaleString('ja-JP')}</TableCell>
                   <TableCell align="right">{detail.pages || 0}</TableCell>
@@ -541,6 +846,8 @@ export default function EstimateForm({
                   <TableCell align="right">{yen(detail.paper_cost)}</TableCell>
                   <TableCell align="right">{yen(detail.plate_cost)}</TableCell>
                   <TableCell align="right">{yen(detail.print_cost)}</TableCell>
+                  <TableCell align="right">{yen(detail.binding_cost)}</TableCell>
+                  <TableCell align="right">{yen(detail.shipping_cost)}</TableCell>
                   <TableCell align="right" sx={{ fontWeight: 900 }}>{yen(detail.total_estimated_cost)}</TableCell>
                   <TableCell align="right">
                     <Stack direction="row" spacing={0.7} justifyContent="flex-end">
@@ -563,7 +870,7 @@ export default function EstimateForm({
 
               {detailList.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={11} sx={{ textAlign: 'center', color: 'text.secondary' }}>
+                  <TableCell colSpan={13} sx={{ textAlign: 'center', color: 'text.secondary' }}>
                     明細がありません。
                   </TableCell>
                 </TableRow>
@@ -648,7 +955,7 @@ export default function EstimateForm({
             />
 
             <Typography fontWeight={700}>ページ数</Typography>
-            <TextField name="pages" value={newDetail.pages} onChange={handleChange} placeholder="例：280P" />
+            <TextField name="pages" value={newDetail.pages} onChange={handleChange} placeholder="例：216P" />
 
             <Typography fontWeight={700}>刷り色</Typography>
             <TextField name="colors" value={newDetail.colors} onChange={handleChange} placeholder="例：1色" />
@@ -666,12 +973,49 @@ export default function EstimateForm({
             />
 
             <Typography fontWeight={700}>製本</Typography>
-            <TextField
-              name="binding_method"
+            <Autocomplete
+              freeSolo
+              options={recommendedBindingMethods}
               value={newDetail.binding_method}
-              onChange={handleChange}
-              placeholder="例：無線綴じ"
+              onChange={(_event, value) => changeBindingMethod(value || '')}
+              onInputChange={(_event, value, reason) => {
+                if (reason === 'input' || reason === 'clear') changeBindingMethod(value);
+              }}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  placeholder="選択または自由入力"
+                  helperText={
+                    recommendedBindingMethods.length > 0
+                      ? `推奨選択：${recommendedBindingMethods.join(' / ')}。自由入力も可能です。`
+                      : 'A5/A6の表紙・本文以外は自由入力です。'
+                  }
+                />
+              )}
             />
+
+            {(newDetail.size === 'A5' || newDetail.size === 'A6') &&
+              (newDetail.detail_type === '表紙' || newDetail.detail_type === '本文') && (
+                <>
+                  <Typography fontWeight={700}>製本利益</Typography>
+                  <Autocomplete
+                    freeSolo
+                    options={BINDING_PROFIT_OPTIONS}
+                    value={newDetail.binding_profit_rate}
+                    onChange={(_event, value) => changeBindingProfitRate(value || '')}
+                    onInputChange={(_event, value, reason) => {
+                      if (reason === 'input' || reason === 'clear') changeBindingProfitRate(value);
+                    }}
+                    renderInput={(params) => (
+                      <TextField
+                        {...params}
+                        placeholder="1.1～2.0"
+                        helperText={`計算時は1.1～2.0の範囲に補正します。現在：${clampBindingProfitRate(newDetail.binding_profit_rate).toFixed(1)}`}
+                      />
+                    )}
+                  />
+                </>
+              )}
 
             <Typography fontWeight={700}>デザイン区分</Typography>
             <FormControl>
@@ -756,17 +1100,65 @@ export default function EstimateForm({
 
                 <Typography fontWeight={700}>印刷単価</Typography>
                 <TextField name="print_unit_cost" value={newDetail.print_unit_cost} onChange={handleChange} />
-
-                <Typography fontWeight={700}>製本代</Typography>
-                <TextField name="binding_cost" value={newDetail.binding_cost} onChange={handleChange} />
-
-                <Typography fontWeight={700}>発送費</Typography>
-                <TextField name="shipping_cost" value={newDetail.shipping_cost} onChange={handleChange} />
               </>
             )}
+
+            <Typography fontWeight={700}>製本代</Typography>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'flex-start' }}>
+              <TextField
+                name="binding_cost"
+                value={newDetail.binding_cost}
+                onChange={handleChange}
+                fullWidth
+                helperText={
+                  newDetail.binding_auto_calculated && autoFinishing.eligible
+                    ? `自動計算：${autoFinishing.formula}`
+                    : '自由入力。自動計算値を手修正すると自動計算OFFになります。'
+                }
+              />
+              {autoFinishing.eligible && (
+                <Button
+                  variant={newDetail.binding_auto_calculated ? 'contained' : 'outlined'}
+                  onClick={enableBindingAutoCalculation}
+                  sx={{ minWidth: 150, mt: { sm: 0.5 } }}
+                >
+                  製本代を自動計算
+                </Button>
+              )}
+            </Stack>
+
+            <Typography fontWeight={700}>発送費</Typography>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'flex-start' }}>
+              <TextField
+                name="shipping_cost"
+                value={newDetail.shipping_cost}
+                onChange={handleChange}
+                fullWidth
+                helperText={
+                  newDetail.shipping_auto_calculated && autoFinishing.target === 'COVER'
+                    ? `表紙発送費を数量帯から自動計算：${yen(autoFinishing.shippingCost)}`
+                    : '自由入力。表紙の指定条件を満たす場合のみ自動計算できます。'
+                }
+              />
+              {autoFinishing.target === 'COVER' && (
+                <Button
+                  variant={newDetail.shipping_auto_calculated ? 'contained' : 'outlined'}
+                  onClick={enableShippingAutoCalculation}
+                  sx={{ minWidth: 150, mt: { sm: 0.5 } }}
+                >
+                  発送費を自動計算
+                </Button>
+              )}
+            </Stack>
           </Box>
 
           <Divider />
+
+          {newDetail.size === 'A6' && (
+            <Alert severity="info">
+              A6は2丁製本として、製版・印刷台数を「ページ数÷32」の切り上げで計算します。用紙必要数は従来通り64面付で計算します。印刷通し表示数量は数量÷2の切り上げです。
+            </Alert>
+          )}
 
           <Paper variant="outlined" sx={{ p: 2, bgcolor: 'background.default' }}>
             <Typography fontWeight={900}>計算プレビュー（税別）</Typography>
@@ -784,6 +1176,15 @@ export default function EstimateForm({
                 <Typography variant="body2">用紙代：{yen(preview.paperCost)}</Typography>
                 <Typography variant="body2">製版代：{yen(preview.plateCost)}</Typography>
                 <Typography variant="body2">印刷代：{yen(preview.printCost)}</Typography>
+                <Typography variant="body2" sx={{ mt: 0.5, color: 'primary.light' }}>
+                  製版・印刷台数：{preview.productionPageDiv}台
+                  {newDetail.size === 'A6' ? '（32P基準）' : ''}
+                </Typography>
+                {newDetail.size === 'A6' && (
+                  <Typography variant="body2" sx={{ color: 'primary.light' }}>
+                    印刷通し表示数量：{preview.printRunQuantity.toLocaleString('ja-JP')}
+                  </Typography>
+                )}
               </Box>
               <Box>
                 <Typography variant="body2">製本代：{yen(preview.bindingCost)}</Typography>
