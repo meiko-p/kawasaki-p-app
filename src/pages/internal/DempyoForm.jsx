@@ -399,7 +399,7 @@ export default function DempyoForm() {
             kawasaki_order_no,
             delivery_schedule,
             client:clients (id, name),
-            product:products (id, product_code, name, product_type)
+            product:products!estimates_product_id_fkey (id, product_code, name, product_type)
           `,
         )
         .order('created_at', { ascending: false })

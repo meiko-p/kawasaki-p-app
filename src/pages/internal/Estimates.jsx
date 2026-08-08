@@ -225,7 +225,7 @@ export default function Estimates() {
                 delivery_factory,
                 kawasaki_order_no,
                 delivery_schedule,
-                product:products (
+                product:products!estimates_product_id_fkey (
                   id,
                   product_code,
                   name,
@@ -360,7 +360,7 @@ export default function Estimates() {
             delivery_factory,
             kawasaki_order_no,
             delivery_schedule,
-            product:products (
+            product:products!estimates_product_id_fkey (
               id,
               product_code,
               name,
@@ -494,7 +494,7 @@ export default function Estimates() {
             delivery_factory,
             kawasaki_order_no,
             delivery_schedule,
-            product:products (
+            product:products!estimates_product_id_fkey (
               id,
               product_code,
               name,
