@@ -61,6 +61,12 @@ const MENU_ITEMS = [
     shared: true,
   },
   {
+    label: '単価登録【数量・商品別単価】',
+    path: '/products',
+    icon: <PriceChangeRoundedIcon />,
+    shared: true,
+  },
+  {
     label: '印刷手配チェックリスト',
     path: '/print-order-checklist',
     icon: <FactCheckRoundedIcon />,
@@ -77,12 +83,6 @@ const MENU_ITEMS = [
     path: '/inventory',
     icon: <WarehouseRoundedIcon />,
     staffOnly: true,
-  },
-  {
-    label: '単価登録【数量・商品別単価】',
-    path: '/products',
-    icon: <PriceChangeRoundedIcon />,
-    shared: true,
   },
   {
     label: '商品番号検索',

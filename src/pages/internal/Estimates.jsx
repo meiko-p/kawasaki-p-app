@@ -79,6 +79,27 @@ function sanitizeFileName(value) {
   return String(value || 'estimate').replace(/[\\/:*?"<>|]/g, '_');
 }
 
+
+function safeNumber(value) {
+  const normalized = String(value ?? '')
+    .replace(/[０-９]/g, (character) =>
+      String.fromCharCode(character.charCodeAt(0) - 0xfee0),
+    )
+    .replace(/[，,]/g, '')
+    .replace(/[^\d.-]/g, '');
+  const number = Number(normalized);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function formatUnitPrice(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '0.00';
+  return number.toLocaleString('ja-JP', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
 async function ensureKawasakiClient() {
   const { data: existing, error: findError } = await supabase
     .from('clients')
@@ -118,6 +139,11 @@ export default function Estimates() {
   const [estimates, setEstimates] = useState([]);
   const [selectedEstimate, setSelectedEstimate] = useState(null);
   const [selectedEstimateDetails, setSelectedEstimateDetails] = useState([]);
+
+  // 見積PDF専用の表示数量・備考。見積計算時の数量とは分離して保持します。
+  const [quoteQuantity, setQuoteQuantity] = useState('');
+  const [quoteNote, setQuoteNote] = useState('');
+  const [quoteDirty, setQuoteDirty] = useState(false);
 
   const pdfRef = useRef(null);
 
@@ -192,6 +218,10 @@ export default function Estimates() {
                 product_id,
                 order_plan_item_id,
                 print_order_qty,
+                quote_quantity,
+                quote_note,
+                quote_total_amount,
+                quote_unit_price,
                 delivery_factory,
                 kawasaki_order_no,
                 delivery_schedule,
@@ -264,6 +294,24 @@ export default function Estimates() {
     fetchProductContext(selectedProduct);
   }, [fetchProductContext, selectedProduct]);
 
+  useEffect(() => {
+    if (!selectedEstimate?.id) {
+      setQuoteQuantity('');
+      setQuoteNote('');
+      setQuoteDirty(false);
+      return;
+    }
+
+    const initialQuoteQuantity =
+      Number(selectedEstimate.quote_quantity || 0) > 0
+        ? Number(selectedEstimate.quote_quantity)
+        : Number(planItem?.print_order_qty || selectedEstimate.print_order_qty || 0);
+
+    setQuoteQuantity(initialQuoteQuantity > 0 ? String(Math.round(initialQuoteQuantity)) : '');
+    setQuoteNote(String(selectedEstimate.quote_note || ''));
+    setQuoteDirty(false);
+  }, [planItem?.print_order_qty, selectedEstimate]);
+
   const createEstimate = async () => {
     if (!selectedProduct?.id) {
       setError('計画書（発注）に登録済みの品番を選択してください');
@@ -289,6 +337,8 @@ export default function Estimates() {
           order_plan_item_id: planItem.id,
           title: selectedProduct.product_code,
           print_order_qty: Math.max(0, Number(planItem.print_order_qty || 0)),
+          quote_quantity: Math.max(0, Number(planItem.print_order_qty || 0)),
+          quote_note: null,
           delivery_factory: planItem.delivery_factory || null,
           kawasaki_order_no: planItem.kawasaki_order_no || null,
           delivery_schedule: normalizeSchedule(planItem.delivery_schedule),
@@ -303,6 +353,10 @@ export default function Estimates() {
             product_id,
             order_plan_item_id,
             print_order_qty,
+            quote_quantity,
+            quote_note,
+            quote_total_amount,
+            quote_unit_price,
             delivery_factory,
             kawasaki_order_no,
             delivery_schedule,
@@ -360,6 +414,25 @@ export default function Estimates() {
     }
   };
 
+  const estimateTotalAmount = useMemo(
+    () =>
+      selectedEstimateDetails.reduce(
+        (sum, detail) => sum + Number(detail?.total_estimated_cost || 0),
+        0,
+      ),
+    [selectedEstimateDetails],
+  );
+
+  const quoteQuantityNumber = useMemo(
+    () => Math.max(0, Math.round(safeNumber(quoteQuantity))),
+    [quoteQuantity],
+  );
+
+  const quoteUnitPrice = useMemo(
+    () => (quoteQuantityNumber > 0 ? estimateTotalAmount / quoteQuantityNumber : 0),
+    [estimateTotalAmount, quoteQuantityNumber],
+  );
+
   const estimateForPdf = useMemo(() => {
     if (!selectedEstimate) return null;
 
@@ -368,6 +441,10 @@ export default function Estimates() {
       product: selectedEstimate.product || selectedProduct,
       print_order_qty:
         Number(planItem?.print_order_qty || selectedEstimate.print_order_qty || 0) || 0,
+      quote_quantity: quoteQuantityNumber,
+      quote_note: String(quoteNote || '').trim(),
+      quote_total_amount: estimateTotalAmount,
+      quote_unit_price: quoteUnitPrice,
       delivery_factory: planItem?.delivery_factory || selectedEstimate.delivery_factory || null,
       kawasaki_order_no: planItem?.kawasaki_order_no || selectedEstimate.kawasaki_order_no || null,
       delivery_schedule:
@@ -375,7 +452,76 @@ export default function Estimates() {
           ? normalizeSchedule(planItem?.delivery_schedule)
           : normalizeSchedule(selectedEstimate.delivery_schedule),
     };
-  }, [planItem, selectedEstimate, selectedProduct]);
+  }, [
+    estimateTotalAmount,
+    planItem,
+    quoteNote,
+    quoteQuantityNumber,
+    quoteUnitPrice,
+    selectedEstimate,
+    selectedProduct,
+  ]);
+
+  const saveQuoteSettings = useCallback(
+    async ({ silent = false } = {}) => {
+      if (!selectedEstimate?.id) return null;
+
+      if (quoteQuantityNumber <= 0) {
+        throw new Error('見積り用の数量は1以上で入力してください');
+      }
+
+      const { data, error: updateError } = await supabase
+        .from('estimates')
+        .update({
+          quote_quantity: quoteQuantityNumber,
+          quote_note: String(quoteNote || '').trim() || null,
+        })
+        .eq('id', selectedEstimate.id)
+        .select(
+          `
+            id,
+            title,
+            created_at,
+            updated_at,
+            client_id,
+            product_id,
+            order_plan_item_id,
+            print_order_qty,
+            quote_quantity,
+            quote_note,
+            quote_total_amount,
+            quote_unit_price,
+            delivery_factory,
+            kawasaki_order_no,
+            delivery_schedule,
+            product:products (
+              id,
+              product_code,
+              name,
+              product_type,
+              active,
+              plan_registered
+            )
+          `,
+        )
+        .single();
+
+      if (updateError) throw updateError;
+
+      setSelectedEstimate(data);
+      setEstimates((previous) =>
+        previous.map((estimate) => (estimate.id === data.id ? data : estimate)),
+      );
+      setQuoteDirty(false);
+
+      if (!silent) {
+        setSuccess('見積PDF用の数量・備考を保存しました。単価登録にも自動反映されます');
+      }
+
+      return data;
+    },
+    [quoteNote, quoteQuantityNumber, selectedEstimate?.id],
+  );
 
   const printEstimate = useReactToPrint({
     content: () => pdfRef.current,
@@ -385,12 +531,26 @@ export default function Estimates() {
     removeAfterPrint: true,
   });
 
-  const handlePrint = () => {
+  const handlePrint = async () => {
     if (!pdfRef.current || !selectedEstimate) {
       alert('見積書の印刷対象がありません');
       return;
     }
-    printEstimate?.();
+
+    setBusy(true);
+    clearMessages();
+
+    try {
+      await saveQuoteSettings({ silent: true });
+      await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+      printEstimate?.();
+    } catch (printError) {
+      // eslint-disable-next-line no-console
+      console.error(printError);
+      setError(printError?.message || '印刷プレビューの準備に失敗しました');
+    } finally {
+      setBusy(false);
+    }
   };
 
   const handleDownloadPdf = async () => {
@@ -403,6 +563,9 @@ export default function Estimates() {
     clearMessages();
 
     try {
+      await saveQuoteSettings({ silent: true });
+      await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+
       if (document.activeElement && typeof document.activeElement.blur === 'function') {
         document.activeElement.blur();
       }
@@ -420,24 +583,16 @@ export default function Estimates() {
       const pdf = new jsPDF('p', 'mm', 'a4');
       const pdfWidth = pdf.internal.pageSize.getWidth();
       const pdfHeight = pdf.internal.pageSize.getHeight();
-      const imageWidth = pdfWidth;
-      const imageHeight = (canvas.height * imageWidth) / canvas.width;
+      const ratio = Math.min(pdfWidth / canvas.width, pdfHeight / canvas.height);
+      const imageWidth = canvas.width * ratio;
+      const imageHeight = canvas.height * ratio;
+      const offsetX = (pdfWidth - imageWidth) / 2;
+      const offsetY = (pdfHeight - imageHeight) / 2;
 
-      let position = 0;
-      let heightLeft = imageHeight;
-
-      pdf.addImage(imageData, 'PNG', 0, position, imageWidth, imageHeight);
-      heightLeft -= pdfHeight;
-
-      while (heightLeft > 0) {
-        position -= pdfHeight;
-        pdf.addPage();
-        pdf.addImage(imageData, 'PNG', 0, position, imageWidth, imageHeight);
-        heightLeft -= pdfHeight;
-      }
+      pdf.addImage(imageData, 'PNG', offsetX, offsetY, imageWidth, imageHeight);
 
       const code = selectedProduct?.product_code || selectedEstimate.title || 'estimate';
-      pdf.save(`${sanitizeFileName(code)}_estimate.pdf`);
+      pdf.save(`${sanitizeFileName(code)}_registered_unit_price_estimate.pdf`);
     } catch (pdfError) {
       // eslint-disable-next-line no-console
       console.error(pdfError);
@@ -721,6 +876,97 @@ export default function Estimates() {
                   deliverySchedule: schedule,
                 }}
               />
+
+              <Divider />
+
+              <Paper variant="outlined" sx={{ p: 2 }}>
+                <Stack spacing={1.5}>
+                  <Box>
+                    <Typography variant="h6" fontWeight={900}>
+                      ⑤ 見積PDF設定
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      見積計算の数量とは別に、登録単価見積書へ表示する数量を指定します。合計金額は変えず、単価だけを「合計金額 ÷ 見積り用の数量」で再計算します。
+                    </Typography>
+                  </Box>
+
+                  <Box
+                    sx={{
+                      display: 'grid',
+                      gridTemplateColumns: { xs: '1fr', md: '280px 1fr' },
+                      gap: 1.5,
+                    }}
+                  >
+                    <TextField
+                      label="見積り用の数量"
+                      value={quoteQuantity}
+                      onChange={(event) => {
+                        setQuoteQuantity(event.target.value);
+                        setQuoteDirty(true);
+                      }}
+                      placeholder="例：500"
+                      inputProps={{ inputMode: 'numeric' }}
+                      helperText="PDFの数量欄と、単価計算の割り算に使用します"
+                    />
+
+                    <TextField
+                      label="備考"
+                      value={quoteNote}
+                      onChange={(event) => {
+                        setQuoteNote(event.target.value);
+                        setQuoteDirty(true);
+                      }}
+                      placeholder="例：まとめ数5部"
+                      multiline
+                      minRows={2}
+                    />
+                  </Box>
+
+                  <Stack
+                    direction={{ xs: 'column', md: 'row' }}
+                    spacing={2}
+                    alignItems={{ md: 'center' }}
+                  >
+                    <Paper variant="outlined" sx={{ p: 1.5, minWidth: 220 }}>
+                      <Typography variant="caption" color="text.secondary">
+                        見積合計（税別）
+                      </Typography>
+                      <Typography fontWeight={900}>
+                        {Math.round(estimateTotalAmount).toLocaleString('ja-JP')}円
+                      </Typography>
+                    </Paper>
+
+                    <Paper variant="outlined" sx={{ p: 1.5, minWidth: 220 }}>
+                      <Typography variant="caption" color="text.secondary">
+                        PDF表示単価
+                      </Typography>
+                      <Typography fontWeight={900} color="primary.light">
+                        @{formatUnitPrice(quoteUnitPrice)}円
+                      </Typography>
+                    </Paper>
+
+                    <Button
+                      variant="outlined"
+                      onClick={async () => {
+                        setBusy(true);
+                        clearMessages();
+                        try {
+                          await saveQuoteSettings();
+                        } catch (saveError) {
+                          // eslint-disable-next-line no-console
+                          console.error(saveError);
+                          setError(saveError?.message || '見積PDF設定の保存に失敗しました');
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
+                      disabled={busy || !quoteDirty}
+                    >
+                      {quoteDirty ? '見積PDF設定を保存' : '保存済み'}
+                    </Button>
+                  </Stack>
+                </Stack>
+              </Paper>
 
               <Divider />
 
