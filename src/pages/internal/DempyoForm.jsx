@@ -386,27 +386,91 @@ export default function DempyoForm() {
     setError('');
 
     try {
-      const { data, error: fetchError } = await supabase
+      /*
+       * estimates と products の間には、現在2本の外部キーがあります。
+       *
+       * 1) estimates.product_id -> products.id
+       * 2) products.price_source_estimate_id -> estimates.id
+       *
+       * PostgRESTの埋め込み取得 product:products(...) を使うと、
+       * どちらの関連か判定できず PGRST201 になる環境があります。
+       * そのため、ここでは埋め込みを一切使わず、
+       * estimates / products / clients を別々に取得して画面側で結合します。
+       */
+      const { data: estimateRows, error: estimateError } = await supabase
         .from('estimates')
         .select(
-          `
-            id,
-            title,
-            created_at,
-            client_id,
-            product_id,
-            delivery_factory,
-            kawasaki_order_no,
-            delivery_schedule,
-            client:clients (id, name),
-            product:products!estimates_product_id_fkey (id, product_code, name, product_type)
-          `,
+          [
+            'id',
+            'title',
+            'created_at',
+            'client_id',
+            'product_id',
+            'delivery_factory',
+            'kawasaki_order_no',
+            'delivery_schedule',
+          ].join(','),
         )
         .order('created_at', { ascending: false })
         .limit(500);
 
-      if (fetchError) throw fetchError;
-      setEstimates(data || []);
+      if (estimateError) throw estimateError;
+
+      const baseRows = estimateRows || [];
+      const productIds = [
+        ...new Set(baseRows.map((row) => row.product_id).filter(Boolean)),
+      ];
+      const clientIds = [
+        ...new Set(baseRows.map((row) => row.client_id).filter(Boolean)),
+      ];
+
+      const fetchRowsByIds = async ({ table, columns, ids }) => {
+        if (!ids.length) return [];
+
+        const output = [];
+        const chunkSize = 100;
+
+        for (let index = 0; index < ids.length; index += chunkSize) {
+          const chunk = ids.slice(index, index + chunkSize);
+          const { data, error } = await supabase
+            .from(table)
+            .select(columns)
+            .in('id', chunk);
+
+          if (error) throw error;
+          output.push(...(data || []));
+        }
+
+        return output;
+      };
+
+      const [productRows, clientRows] = await Promise.all([
+        fetchRowsByIds({
+          table: 'products',
+          columns: 'id, product_code, name, product_type',
+          ids: productIds,
+        }),
+        fetchRowsByIds({
+          table: 'clients',
+          columns: 'id, name',
+          ids: clientIds,
+        }),
+      ]);
+
+      const productMap = new Map(
+        productRows.map((product) => [product.id, product]),
+      );
+      const clientMap = new Map(
+        clientRows.map((client) => [client.id, client]),
+      );
+
+      const mergedRows = baseRows.map((estimate) => ({
+        ...estimate,
+        product: productMap.get(estimate.product_id) || null,
+        client: clientMap.get(estimate.client_id) || null,
+      }));
+
+      setEstimates(mergedRows);
     } catch (fetchError) {
       // eslint-disable-next-line no-console
       console.error(fetchError);
@@ -1436,4 +1500,3 @@ export default function DempyoForm() {
     </Stack>
   );
 }
-import React, { useState, useRef, useCallback, useMemo } from 'react';

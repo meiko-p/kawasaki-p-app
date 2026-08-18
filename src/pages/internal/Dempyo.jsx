@@ -259,7 +259,7 @@ const ESTIMATE_SELECT = `
   delivery_factory,
   kawasaki_order_no,
   delivery_schedule,
-  product:products (
+  product:products!estimates_product_id_fkey (
     id,
     product_code,
     name,
